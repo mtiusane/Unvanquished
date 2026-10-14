@@ -194,6 +194,11 @@ private:
 	Geometry geo_;
 	NavgenStatus initStatus_;
 
+	// Whether g_bot_navmeshReduceTypes was set when the tasks were enqueued, so
+	// GenerateWallLayers knows which classes reuse a given mesh (and thus which
+	// meshes must carry wallwalk layers even when their owner is not a wallwalker).
+	bool reduceTypes_ = false;
+
 	std::vector<std::unique_ptr<NavgenTask>> taskQueue_;
 
 	std::atomic<int> fractionCompleteNumerator_{0};
@@ -208,10 +213,11 @@ private:
 
 	void WriteFile(const NavgenTask& t);
 
-	// Wall-walk support: rasterize wall/ceiling surfaces (rotated so their
-	// outward normal points "up") into the task's tile cache, tagging the
-	// resulting polygons with POLYFLAGS_WALLWALK. A no-op when wallwalk is
-	// disabled via navcfg, so the default navmesh is unaffected.
+	// Wall-walk support: emit off-mesh connection markers at the base of every
+	// on-axis wall/ceiling, tagged POLYFLAGS_WALLWALK, so a wallwalk-capable
+	// class can climb toward a target that is above it. Runs by default for
+	// wallwalk classes (NavgenConfig::Default sets a non-zero orientation mask)
+	// and is a no-op for non-wallwalk classes, so their meshes are unaffected.
 	void GenerateWallLayers( NavgenTask &t );
 	bool IsWallwalkSupported() const;
 
@@ -220,7 +226,7 @@ public:
 
 	std::unique_ptr<NavgenTask> StartGeneration(class_t species);
 
-	void LoadMapAndEnqueueTasks(Str::StringRef mapName, std::bitset<PCL_NUM_CLASSES> classes);
+	void LoadMapAndEnqueueTasks(Str::StringRef mapName, std::bitset<PCL_NUM_CLASSES> classes, bool reduceTypes);
 
 	// Only intended to be meaningful if no tasks have failed
 	float FractionComplete() const;

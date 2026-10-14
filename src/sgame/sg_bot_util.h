@@ -122,6 +122,11 @@ bool         BotMoveToGoal( gentity_t *self );
 // them by climbing a wall/ceiling. Returns true when a climb (or walk-to-base) was
 // issued, so the caller skips ordinary movement. Gated behind g_bot_wallwalkClimb.
 bool         BotWallwalkClimbTowardGoal( gentity_t *self );
+// As BotWallwalkClimbTowardGoal but toward an elevated coordinate goal (the top of a
+// wall or a ceiling) set by g_bot_wallwalkBuild, so a wallwalk-capable builder can
+// reach an elevated build spot. Returns true while climbing/walking, false once the
+// goal's height is reached so the caller hands control back to the build flow.
+bool         BotWallwalkBuildTowardGoal( gentity_t *self );
 void         BotMoveUpward( gentity_t *self, glm::vec3 target );
 
 // local navigation

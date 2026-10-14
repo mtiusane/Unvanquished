@@ -54,20 +54,20 @@ static Cvar::Cvar<int> g_bot_navgen_maxThreads(
 	"g_bot_navgen_maxThreads", "Number of background threads to use when generating navmeshes. 0 for main thread",
 	Cvar::NONE, 1);
 
+// TODO: Latch(), when supported in gamelogic
+Cvar::Cvar<bool> g_bot_navmeshReduceTypes(
+	"g_bot_navmeshReduceTypes", "generate/use fewer navmeshes by sharing meshes between similar species",
+	Cvar::NONE, false);
+
 // blocks the main thread!
 void G_BlockingGenerateNavmesh( std::bitset<PCL_NUM_CLASSES> classes )
 {
 	std::string mapName = Cvar::GetValue( "mapname" );
 	NavmeshGenerator navgen;
-	navgen.LoadMapAndEnqueueTasks( mapName, classes );
+	navgen.LoadMapAndEnqueueTasks( mapName, classes, g_bot_navmeshReduceTypes.Get() );
 	navgen.StartBackgroundThreads( g_bot_navgen_maxThreads.Get() );
 	navgen.WaitInMainThread( []( float ) {} );
 }
-
-// TODO: Latch(), when supported in gamelogic
-Cvar::Cvar<bool> g_bot_navmeshReduceTypes(
-	"g_bot_navmeshReduceTypes", "generate/use fewer navmeshes by sharing meshes between similar species",
-	Cvar::NONE, false);
 
 static Cvar::Range<Cvar::Cvar<int>> msecPerFrame(
 	"g_bot_navgen_msecPerFrame", "time budget per frame for single-threaded navmesh generation",
@@ -237,7 +237,7 @@ void G_BotNavInit( int generateNeeded )
 		else
 		{
 			ASSERT( !generatingNow );
-			navgen.LoadMapAndEnqueueTasks( mapName, missing );
+			navgen.LoadMapAndEnqueueTasks( mapName, missing, g_bot_navmeshReduceTypes.Get() );
 			usingBackgroundThreads = g_bot_navgen_maxThreads.Get() > 0;
 
 			if ( usingBackgroundThreads )
@@ -981,7 +981,26 @@ static void BotMaybeAttackWhileClimbing( gentity_t *self )
 	glm::vec3 origin = VEC2GLM( self->s.origin );
 	glm::vec3 forward;
 	AngleVectors( VEC2GLM( self->client->ps.viewangles ), &forward, nullptr, nullptr );
-	auto range = ownClass == PCL_ALIEN_LEVEL0 ? LEVEL0_BITE_RANGE : LEVEL1_CLAW_RANGE;
+
+	// Each wallwalk-capable class has its own melee range for the trace; a bot
+	// that isn't one of them can never reach this point, so defaulting to a
+	// no-op keeps the trace out of scope for anything unexpected.
+	float range = 0.f;
+	switch ( ownClass )
+	{
+		case PCL_ALIEN_LEVEL0:
+			range = LEVEL0_BITE_RANGE;
+			break;
+		case PCL_ALIEN_LEVEL1:
+			range = LEVEL1_CLAW_RANGE;
+			break;
+		case PCL_ALIEN_BUILDER0_UPG:
+			// The advanced granger's claw (WP_ABUILD2 secondary fire) reaches this far.
+			range = ABUILDER_CLAW_RANGE;
+			break;
+		default:
+			return;
+	}
 
 	trace_t trace;
 	glm::vec3 end = origin + range * forward;
@@ -997,16 +1016,26 @@ static void BotMaybeAttackWhileClimbing( gentity_t *self )
 			int distanceExtension = 30;  // roughly corresponds to 100 milliseconds
 			// upper bound for extensions, in case a bot loops on a wall:
 			int extendedDistance = std::max( self->botMind->lastNavconDistance + distanceExtension, 4000 );
+			usercmd_t *botCmdBuffer = &self->botMind->cmdBuffer;
 
-			if ( ownClass == PCL_ALIEN_LEVEL0 && G_DretchCanDamageEntity( hit ) )
+			switch ( ownClass )
 			{
-				self->botMind->lastNavconDistance = extendedDistance;
-			}
-			else if ( ownClass == PCL_ALIEN_LEVEL1 )
-			{
-				usercmd_t *botCmdBuffer = &self->botMind->cmdBuffer;
-				BotFireWeapon( WPM_PRIMARY, botCmdBuffer );
-				self->botMind->lastNavconDistance = extendedDistance;
+				case PCL_ALIEN_LEVEL0:
+					// The dretch bite is an auto-hit, so just keep the climb alive.
+					if ( G_DretchCanDamageEntity( hit ) )
+					{
+						self->botMind->lastNavconDistance = extendedDistance;
+					}
+					break;
+				case PCL_ALIEN_LEVEL1:
+					BotFireWeapon( WPM_PRIMARY, botCmdBuffer );
+					self->botMind->lastNavconDistance = extendedDistance;
+					break;
+				case PCL_ALIEN_BUILDER0_UPG:
+					// The advanced granger's claw is its secondary fire (swipe).
+					BotFireWeapon( WPM_SECONDARY, botCmdBuffer );
+					self->botMind->lastNavconDistance = extendedDistance;
+					break;
 			}
 		}
 	}
@@ -1151,6 +1180,62 @@ bool BotWallwalkClimbTowardGoal( gentity_t *self )
 	}
 
 	return false;
+}
+
+// Drives a wallwalk-capable builder (advanced granger) toward an elevated coordinate
+// goal -- the top of a wall or a ceiling, set by g_bot_wallwalkBuild -- instead of
+// the ordinary ground route. When the bot is at the base of a wall below the goal it
+// issues the wall-walk; otherwise it walks horizontally toward the nearest wall base.
+// Returns true while still making progress (so the caller keeps this branch active),
+// and false once the bot has reached or passed the goal's height, so the caller can
+// hand control back to the build flow. Only meaningful for a wallwalk-capable class,
+// which is why the caller (BotActionRoamInRadius) gates it on SCA_WALLCLIMBER.
+bool BotWallwalkBuildTowardGoal( gentity_t *self )
+{
+	const botTarget_t &goal = self->botMind->goal;
+	if ( !goal.targetsCoordinates() )
+	{
+		return false;
+	}
+
+	glm::vec3 ownPos = VEC2GLM( self->s.origin );
+	glm::vec3 targetPos = goal.getPos();
+
+	// Already at or above the goal's height: the elevated spot is reached, so let the
+	// build flow take over on the next tick.
+	if ( targetPos.z <= ownPos.z + 40.f )
+	{
+		return false;
+	}
+
+	// Locate the nearest base-of-wall marker so we can climb from it. There may be
+	// none in this mesh, in which case there is nothing to climb onto.
+	glm::vec3 markerPos;
+	float markerDist = 0.f;
+	const bool hasWall = G_BotNearestWallConnection( self->s.number, ownPos, markerPos, markerDist );
+	if ( !hasWall )
+	{
+		// No wall in this mesh to climb: walk horizontally toward the goal's base and
+		// let the ordinary (ground) route take it the rest of the way.
+		glm::vec3 dir = targetPos - ownPos;
+		dir.z = 0.f;
+		BotSeek( self, dir );
+		return true;
+	}
+
+	// At the base of a wall and below the goal: climb up toward it.
+	if ( markerDist <= g_bot_wallwalkClimbRange.Get() )
+	{
+		BotClimbToward( self, targetPos );
+		return true;
+	}
+
+	// Not at a wall base yet: walk horizontally toward the nearest base and let the
+	// next tick climb from there.
+	glm::vec3 toMarker = markerPos - ownPos;
+	toMarker.z = 0.f;
+	BotSeek( self, toMarker );
+	return true;
 }
 
 void BotMoveUpward( gentity_t *self, glm::vec3 nextCorner )

@@ -332,6 +332,62 @@ bool G_BotNearestWallConnection( int botClientNum, const glm::vec3 &ownPos, glm:
 	return true;
 }
 
+// Like G_BotNearestWallConnection but reports the TOP (end) of the nearest
+// wall/ceiling marker to `refPos`, so a wallwalk-capable builder can target an
+// elevated build spot on top of a wall or on a ceiling. The nearest marker is
+// chosen by its base (start), and its top (end) is what is returned. `refPos` and
+// `topPos` are in the quake coordinate system (Z up); `dist` is the horizontal
+// distance from `refPos` to that marker's base. Returns false when the mesh has no
+// wallwalk markers, in which case climbing is impossible.
+bool G_BotNearestWallTop( int botClientNum, const glm::vec3 &refPos, glm::vec3 &topPos, float &dist )
+{
+	Bot_t *bot = &agents[ botClientNum ];
+	if ( !bot->nav )
+	{
+		return false;
+	}
+
+	const OffMeshConnections &con = bot->nav->process.con;
+	if ( con.offMeshConCount == 0 )
+	{
+		return false;
+	}
+
+	rVec ref( refPos );
+	bool found = false;
+	float bestDistSq = 1e18f;
+	for ( int i = 0; i < con.offMeshConCount; ++i )
+	{
+		if ( ( con.flags[ i ] & navPolyFlags::POLYFLAGS_WALLWALK ) == 0 )
+		{
+			continue; // only generated wall/ceiling bridge connections
+		}
+
+		// Match the nearest marker by its base (start), then return its top (end).
+		// Both are in the recast frame (Y up), so the base is compared in XZ
+		// directly and the top is converted to quake space (Z up) for the caller.
+		rVec start = rVec::Load( &con.verts[ i * 6 + 0 ] );
+		const float dx = start[ 0 ] - ref[ 0 ];
+		const float dz = start[ 2 ] - ref[ 2 ];
+		const float d2 = dx * dx + dz * dz;
+		if ( d2 < bestDistSq )
+		{
+			bestDistSq = d2;
+			found = true;
+			rVec end = rVec::Load( &con.verts[ i * 6 + 3 ] );
+			topPos = end.ToQuake();
+		}
+	}
+
+	if ( !found )
+	{
+		return false;
+	}
+
+	dist = std::sqrt( bestDistSq );
+	return true;
+}
+
 static void G_UpdatePathCorridor( Bot_t *bot, rVec spos, botRouteTargetInternal target )
 {
 	bot->corridor.movePosition( spos, bot->nav->query, &bot->filter );

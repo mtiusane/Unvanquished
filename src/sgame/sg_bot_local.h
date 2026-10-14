@@ -242,6 +242,10 @@ bool G_BotNextCornerIsWallwalk( int botClientNum );
 // exist, else false (climbing impossible). Lets a wallwalk-capable class walk to a
 // wall base even when it isn't standing at one yet.
 bool G_BotNearestWallConnection( int botClientNum, const glm::vec3 &ownPos, glm::vec3 &markerPos, float &markerDist );
+// As G_BotNearestWallConnection but returns the TOP (end) of the nearest
+// wall/ceiling marker to `refPos`, so a wallwalk-capable builder can target an
+// elevated build spot; `dist` is the horizontal distance to that marker's base.
+bool G_BotNearestWallTop( int botClientNum, const glm::vec3 &refPos, glm::vec3 &topPos, float &dist );
 bool G_BotNavTrace( int botClientNum, botTrace_t *botTrace, const glm::vec3& start, const glm::vec3& end );
 glm::vec3 ProjectPointOntoVector( const glm::vec3 &point, const glm::vec3 &linePoint1, const glm::vec3 &linePoint2 );
 

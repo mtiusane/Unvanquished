@@ -1025,10 +1025,14 @@ static NavgenStatus rasterizeTileLayers( Geometry& geo, rcContext &context, int 
 }
 
 void NavmeshGenerator::LoadMapAndEnqueueTasks(
-	Str::StringRef mapName, std::bitset<PCL_NUM_CLASSES> classes )
+	Str::StringRef mapName, std::bitset<PCL_NUM_CLASSES> classes, bool reduceTypes )
 {
 	// The NavmeshGenerator object is not designed to be used more than once
 	ASSERT( mapName_.empty() );
+
+	// Remembers how the mesh-to-class mapping was chosen so GenerateWallLayers
+	// can decide, per mesh, whether a wallwalk-capable class reuses it.
+	reduceTypes_ = reduceTypes;
 
 	// never divide by 0
 	// This fails to include map loading time but we don't update progress during that anyway
@@ -1191,12 +1195,15 @@ bool NavmeshGenerator::IsWallwalkSupported() const
 // Emits off-mesh connection markers at the base of every on-axis wall/ceiling of
 // the map, tagged POLYFLAGS_WALLWALK, so that a wallwalk-capable class knows it
 // can climb from its current spot toward a target that is above it (see
-// G_BotNearWallConnection and BotWallwalkClimbTowardGoal in sg_bot_nav.cpp).
-// It is a no-op unless wallwalk was requested via navcfg
-// (wallwalkOrientationMask != 0), so the default navigation mesh (and its
-// navcon) is unchanged. No rotated tiles are rasterized: a recast tile cache
-// has a single global "up" vector, so a wall rotated to lie flat cannot be
-// routed onto (see the body for the full rationale).
+// G_BotNearestWallConnection and BotWallwalkClimbTowardGoal in sg_bot_nav.cpp).
+// The pass runs by default for wallwalk-capable classes: NavgenConfig::Default()
+// sets a non-zero wallwalkOrientationMask, so the automatic navmesh generation
+// emits these markers out of the box, with no per-map navcfg required. It is a
+// no-op for non-wallwalk classes, so their meshes and navcon files stay
+// byte-for-byte unchanged, and can be disabled entirely by setting the mask to 0.
+// No rotated tiles are rasterized: a recast tile cache has a single global "up"
+// vector, so a wall rotated to lie flat cannot be routed onto (see the body for
+// the full rationale).
 void NavmeshGenerator::GenerateWallLayers( NavgenTask &t )
 {
 	if ( !IsWallwalkSupported() || t.status.code != NavgenStatus::OK )
@@ -1204,18 +1211,23 @@ void NavmeshGenerator::GenerateWallLayers( NavgenTask &t )
 		return;
 	}
 
-	// Only wallwalk-capable classes produce the bridge markers (their
-	// POLYFLAGS_WALLWALK flag is filtered out for everyone else anyway), so skip
-	// the pass for other classes to keep their navcon empty/unchanged. We no
-	// longer rasterize rotated wall/ceiling tiles into the shared cache: a recast
-	// tile cache assumes a single global "up" vector, so a wall rotated to lie
-	// flat lands on the ground cache's grid at a position that does not match its
-	// real world location and findNearestPoly() of a world position never finds
-	// it, so routing a bot ONTO such a tile does not work. Instead we emit off-mesh
-	// connection markers at the base of each wall and let a wallwalk-capable bot
-	// climb toward a target that is above it (see G_BotNearWallConnection and
-	// BotWallwalkClimbTowardGoal in sg_bot_nav.cpp).
-	if ( !BG_ClassHasAbility( t.species, SCA_WALLCLIMBER ) )
+	// The markers are tagged POLYFLAGS_WALLWALK, which is filtered out of every
+	// non-wallwalk class's poly filter, so only wallwalk-capable classes ever
+	// traverse them. A mesh therefore needs them only when it is used by a
+	// wallwalk-capable class -- either the mesh owner itself, or (under
+	// g_bot_navmeshReduceTypes) another class that reuses this mesh, e.g. the
+	// advanced granger reusing the granger mesh. Skipping the pass for meshes no
+	// wallwalk class uses keeps non-wallwalk meshes and their navcon files
+	// byte-for-byte unchanged. We no longer rasterize rotated wall/ceiling tiles
+	// into the shared cache: a recast tile cache assumes a single global "up"
+	// vector, so a wall rotated to lie flat lands on the ground cache's grid at a
+	// position that does not match its real world location and findNearestPoly()
+	// of a world position never finds it, so routing a bot ONTO such a tile does
+	// not work. Instead we emit off-mesh connection markers at the base of each
+	// wall and let a wallwalk-capable bot climb toward a target that is above it
+	// (see G_BotNearestWallConnection and BotWallwalkClimbTowardGoal in
+	// sg_bot_nav.cpp).
+	if ( !NavmeshNeedsWallwalk( t.species, reduceTypes_ ) )
 	{
 		return;
 	}
@@ -1376,7 +1388,7 @@ bool NavmeshGenerator::Step( NavgenTask &t )
 	{
 		// Add the wall/ceiling layers after all ground tiles so that, should the
 		// shared tile cache ever overflow, the ground navigation mesh keeps
-		// priority. No-op unless wallwalk was requested via navcfg.
+		// priority. No-op for non-wallwalk classes.
 		if ( IsWallwalkSupported() && !t.wallLayersGenerated )
 		{
 			GenerateWallLayers( t );

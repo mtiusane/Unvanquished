@@ -1161,7 +1161,7 @@ static void GenerateNavmeshes()
 	trap_UpdateScreen();
 
 	NavmeshGenerator navgen;
-	navgen.LoadMapAndEnqueueTasks( mapName, missing );
+	navgen.LoadMapAndEnqueueTasks( mapName, missing, reduceTypes );
 	navgen.StartBackgroundThreads( cg_navgenMaxThreads.Get() );
 	navgen.WaitInMainThread( []( float progress ) {
 		if ( progress >= cg.navmeshLoadingFraction + 0.01f )

@@ -310,6 +310,30 @@ inline std::vector<class_t> RequiredNavmeshes( bool reduceTypes )
 	return required;
 }
 
+// Whether the navmesh generated for `meshSpecies` must carry the wallwalk layers
+// (the base-of-wall off-mesh connection markers). True when the mesh owner is
+// itself a wallwalk-capable class, or when a wallwalk-capable class reuses this
+// mesh under g_bot_navmeshReduceTypes (e.g. the advanced granger reuses the
+// granger mesh, which is not itself a wallwalker). The reduceTypes argument must
+// match the one used to choose the mesh, so the wallwalk markers are generated
+// for exactly the meshes a wallwalk-capable bot will traverse.
+inline bool NavmeshNeedsWallwalk( class_t meshSpecies, bool reduceTypes )
+{
+	for ( int c = PCL_NONE; ++c < PCL_NUM_CLASSES; )
+	{
+		class_t species = Util::enum_cast<class_t>( c );
+		if ( NavmeshForClass( species, reduceTypes ) != meshSpecies )
+		{
+			continue;
+		}
+		if ( BG_ClassHasAbility( species, SCA_WALLCLIMBER ) )
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
 inline std::string NavmeshFilename(Str::StringRef mapName, class_t species)
 {
 	return Str::Format("maps/%s-%s.navMesh", mapName, BG_Class(species)->name);

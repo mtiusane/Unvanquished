@@ -2,16 +2,16 @@
 # Copyright (c) 2013-2014, Unvanquished Developers
 # All rights reserved.
 #
-# Redistribution and use in source code and binary forms, with or without
+# Redistribution and use in source and binary forms, with or without
 # modification, are permitted provided that the following conditions are met:
-#   * Redistributions of source code must retain the above copyright
-#     notice, this list of conditions and the following disclaimer.
-#   * Redistributions in binary form must reproduce the above copyright
-#     notice, this list of conditions and the following disclaimer in the
-#     documentation and/or other materials provided with the distribution.
-#   * Neither the name of the <organization> nor the
-#     names of its contributors may be used to endorse or promote products
-#     derived from this software without specific prior written permission.
+#  * Redistributions of source code must retain the above copyright
+#    notice, this list of conditions and the following disclaimer.
+#  * Redistributions in binary form must reproduce the above copyright
+#    notice, this list of conditions and the following disclaimer in the
+#    documentation and/or other materials provided with the distribution.
+#  * Neither the name of the <organization> nor the
+#    names of its contributors may be used to endorse or promote products
+#    derived from this software without specific prior written permission.
 #
 # THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
 # ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
@@ -40,7 +40,7 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_BINARY_DIR)
 endif()
 
 set(SUBMODULE_LIST
-   "libs/RmlUi"
+  "libs/RmlUi"
 )
 
 set(DAEMON_DIR_STRING "Path to the Daemon Engine source.")
@@ -52,7 +52,7 @@ else()
 endif()
 
 foreach(SUBMODULE_PATH ${SUBMODULE_LIST})
-   # Check if we need to initialize submodule
+  # Check if we need to initialize submodule
   file(GLOB DENG_RESULT "${CMAKE_CURRENT_SOURCE_DIR}/${SUBMODULE_PATH}")
   list(LENGTH DENG_RESULT DENG_RES_LEN)
   if(DENG_RES_LEN EQUAL 0)
@@ -105,35 +105,35 @@ set(NACL_VM_INHERITED_OPTIONS ${NACL_VM_INHERITED_OPTIONS} RC_MAX_LAYERS RC_MAX_
 
 if (BUILDING_ANY_GAMELOGIC)
     if (BUILD_CGAME)
-         # Freetype (RmlUi dependency)
+        # Freetype (RmlUi dependency)
         prefer_package(Freetype ${DAEMON_DIR}/freetype.cmake)
         include_directories(${FREETYPE_INCLUDE_DIRS})
 
-         # We may remove this once Freetype is removed from external_deps.
+        # We may remove this once Freetype is removed from external_deps.
         if (NOT ZLIB_FOUND AND NOT "${FREETYPE_INTERNAL_ZLIB}")
             find_package(ZLIB REQUIRED)
             set(FREETYPE_LIBRARIES ${FREETYPE_LIBRARIES} ${ZLIB_LIBRARIES})
         endif()
 
-         # RmlUi
+        # RmlUi
         include(${CMAKE_CURRENT_SOURCE_DIR}/rmlui.cmake)
     endif()
 
-     # Lua
+    # Lua
     prefer_package(Lua ${CMAKE_CURRENT_SOURCE_DIR}/lua.cmake)
     include_directories(${LUA_INCLUDE_DIR})
 
-     # Fastlz
+    # Fastlz
     add_library(srclibs-fastlz EXCLUDE_FROM_ALL ${FASTLZLIST})
 
-     # Detour
+    # Detour
     add_library(srclibs-detour EXCLUDE_FROM_ALL ${DETOURLIST})
     include_directories(${LIB_DIR}/recastnavigation/Detour/Include
-                         ${LIB_DIR}/recastnavigation/DetourTileCache/Include
-                         ${LIB_DIR}/recastnavigation/DebugUtils/Include
-                         ${LIB_DIR}/recastnavigation/DetourCrowd/Include)
+                        ${LIB_DIR}/recastnavigation/DetourTileCache/Include
+                        ${LIB_DIR}/recastnavigation/DebugUtils/Include
+                        ${LIB_DIR}/recastnavigation/DetourCrowd/Include)
 
-     # Recast
+    # Recast
     if (RC_MAX_LAYERS GREATER 255)
         message(FATAL_ERROR "RC_MAX_LAYERS must be 255 or smaller")
     endif()
@@ -143,14 +143,14 @@ if (BUILDING_ANY_GAMELOGIC)
 
     add_library(srclibs-recast EXCLUDE_FROM_ALL ${RECASTLIST})
     include_directories(
-         ${LIB_DIR}/recastnavigation/Recast/Include
-         ${LIB_DIR}/recastnavigation/RecastDemo/Include)
+        ${LIB_DIR}/recastnavigation/Recast/Include
+        ${LIB_DIR}/recastnavigation/RecastDemo/Include)
 
-     # GLM (header-only)
+    # GLM (header-only)
     include_directories(${LIB_DIR}/glm)
     add_definitions(-DGLM_FORCE_EXPLICIT_CTOR)
 
-     # tinygettext
+    # tinygettext
     add_library(srclibs-tinygettext EXCLUDE_FROM_ALL ${TINYGETTEXTLIST})
     target_include_directories(srclibs-tinygettext PUBLIC ${LIB_DIR}/tinygettext/include)
     target_compile_definitions(srclibs-tinygettext PUBLIC TINYGETTEXT_UTF8_ONLY)
@@ -161,38 +161,38 @@ endif()
 ################################################
 
 if (BUILDING_ANY_GAMELOGIC)
-     # keep
-    try_flag(WARNINGS            "-Wno-pragmas")
-    try_flag(WARNINGS            "-Wno-unknown-pragmas")
-    try_flag(WARNINGS "-W${WARNMODE}old-style-cast")
-    try_flag(WARNINGS            "-Woverloaded-virtual")
-    try_flag(WARNINGS            "-Wstrict-null-sentinel")
-    try_flag(WARNINGS            "-Wno-deprecated-enum-compare")
-    try_flag(WARNINGS            "-Wno-deprecated-enum-compare-conditional")
-    try_flag(WARNINGS            "-Wno-deprecated-enum-enum-conversion")
-    try_flag(WARNINGS            "-Wno-deprecated-enum-float-conversion")
-    try_flag(WARNINGS            "-Wno-nonnull")
+    # keep
+    try_flag(WARNINGS           "-Wno-pragmas")
+    try_flag(WARNINGS           "-Wno-unknown-pragmas")
+    try_flag(WARNINGS           "-W${WARNMODE}old-style-cast")
+    try_flag(WARNINGS           "-Woverloaded-virtual")
+    try_flag(WARNINGS           "-Wstrict-null-sentinel")
+    try_flag(WARNINGS           "-Wno-deprecated-enum-compare")
+    try_flag(WARNINGS           "-Wno-deprecated-enum-compare-conditional")
+    try_flag(WARNINGS           "-Wno-deprecated-enum-enum-conversion")
+    try_flag(WARNINGS           "-Wno-deprecated-enum-float-conversion")
+    try_flag(WARNINGS           "-Wno-nonnull")
 
-     # Since OSX uses newer compilers, they complain about some of header only libs.
-     # So, ignore deprecation warnings on OSX.
+    # Since OSX uses newer compilers, they complain about some of header only libs.
+    # So, ignore deprecation warnings on OSX.
     if (APPLE)
-         # Do not error for GLM vsprintf deprecation warnings.
+        # Do not error for GLM vsprintf deprecation warnings.
         try_flag(WARNINGS "-Wno-error=deprecated-declarations")
     endif()
 
-     # remove
-    try_flag(WARNINGS            "-Wno-maybe-uninitialized")
-    try_flag(WARNINGS "/wd4127")   # conditional expression is constant
-    try_flag(WARNINGS "/wd4458")   # declaration of 'XXX' hides class member
-    try_flag(WARNINGS "/wd4459")   # declaration of 'XXX' hides global declaration
-    try_flag(WARNINGS "/wd4701")   # potentially uninitialized local variable 'XXX' used
-    try_flag(WARNINGS "/wd5054")   # operator '+': deprecated between enumerations of different types
-    try_flag(WARNINGS "/wd5055")   # operator '==': deprecated between enumerations and floating-point types
+    # remove
+    try_flag(WARNINGS           "-Wno-maybe-uninitialized")
+    try_flag(WARNINGS "/wd4127")  # conditional expression is constant
+    try_flag(WARNINGS "/wd4458")  # declaration of 'XXX' hides class member
+    try_flag(WARNINGS "/wd4459")  # declaration of 'XXX' hides global declaration
+    try_flag(WARNINGS "/wd4701")  # potentially uninitialized local variable 'XXX' used
+    try_flag(WARNINGS "/wd5054")  # operator '+': deprecated between enumerations of different types
+    try_flag(WARNINGS "/wd5055")  # operator '==': deprecated between enumerations and floating-point types
     try_flag(WARNINGS "/wd26812") # The enum 'XXX' is unscoped. Prefer 'enum class' over 'enum'
 endif()
 
 if (NACL)
-     # https://stackoverflow.com/a/48413842
+    # https://stackoverflow.com/a/48413842
     set(WARNINGS ${WARNINGS} "-Wno-missing-braces")
 endif()
 
@@ -203,29 +203,29 @@ endif()
 if (BUILD_SGAME)
     include(tools/cbse/CBSE.cmake)
 
-     # Avoid generating CBSE in the NaCl subproject.
+    # Avoid generating CBSE in the NaCl subproject.
     if (FORK EQUAL 2)
         CBSEFileList("${GAMELOGIC_DIR}/sgame/" sgame_GENERATED_CBSE)
     else()
         CBSE("sgame"
-              "${GAMELOGIC_DIR}/sgame/entities.yaml"
-              "${GAMELOGIC_DIR}/sgame/")
+             "${GAMELOGIC_DIR}/sgame/entities.yaml"
+             "${GAMELOGIC_DIR}/sgame/")
     endif()
 
     GAMEMODULE(NAME sgame
         DEFINITIONS
             BUILD_SGAME
         FLAGS
-             ${WARNINGS}
+            ${WARNINGS}
         FILES
-             ${SGAMELIST}
-             ${sgame_GENERATED_CBSE}
+            ${SGAMELIST}
+            ${sgame_GENERATED_CBSE}
         LIBS
-             ${LUA_LIBRARY}
+            ${LUA_LIBRARY}
             srclibs-detour
             srclibs-recast
             srclibs-fastlz
-     )
+    )
 
     if (BUILD_GAME_NACL AND NOT (FORK EQUAL 2))
         include(ExternalProject)
@@ -244,16 +244,16 @@ if (BUILD_CGAME)
         BUILD_CGAME
         RMLUI_STATIC_LIB
     FLAGS
-         ${WARNINGS}
+        ${WARNINGS}
     FILES
-         ${CGAMELIST}
+        ${CGAMELIST}
     LIBS
         srclibs-rmlui
-         ${FREETYPE_LIBRARIES}
-         ${LUA_LIBRARY}
+        ${FREETYPE_LIBRARIES}
+        ${LUA_LIBRARY}
         srclibs-tinygettext
         srclibs-detour
         srclibs-recast
         srclibs-fastlz
-   )
+  )
 endif()

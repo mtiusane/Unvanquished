@@ -1195,11 +1195,92 @@ AINodeStatus_t BotActionReload( gentity_t *self, AIGenericNode_t * )
 	return STATUS_FAILURE;
 }
 
+// g_bot_wallwalkBuild: when set, a wallwalk-capable alien builder (the advanced
+// granger) will also consider elevated build spots -- the top of a nearby wall or a
+// ceiling -- instead of only building on the ground near the overmind, climbing there
+// via the same base-of-wall markers the wallwalk combat climb uses. Experimental and
+// off by default. Note the engine's build validation (G_CanBuild) only accepts
+// near-horizontal surfaces, so vertical wall faces are rejected: only wall tops and
+// ceilings yield a valid placement.
+static Cvar::Cvar<bool> g_bot_wallwalkBuild("g_bot_wallwalkBuild", "whether a wallwalk-capable alien builder will climb to the top of a wall or a ceiling to place a buildable there", Cvar::NONE, false);
+
+// When g_bot_wallwalkBuild is set, a wallwalk-capable alien builder (advanced
+// granger) considers an elevated build spot -- the top of a nearby wall or a
+// ceiling -- instead of only building on the ground near the reference entity. The
+// spot is picked once per roam (the top of the wall/ceiling marker nearest a random
+// point in the radius) and the bot is then driven there with the existing wallwalk
+// machinery. Returns STATUS_SUCCESS once the elevated spot is reached, so the caller
+// can hand control to the build flow; STATUS_RUNNING while climbing/walking toward it;
+// and STATUS_FAILURE when there is no nearby wall or ceiling, so the caller falls back
+// to a ground roam.
+static AINodeStatus_t BotWallwalkBuildRoam( gentity_t *self, AIGenericNode_t *node, AIEntity_t e, float radius )
+{
+	if ( node != self->botMind->currentNode )
+	{
+		botEntityAndDistance_t ent = AIEntityToGentity( self, e );
+		if ( !ent.ent )
+		{
+			return STATUS_FAILURE;
+		}
+
+		glm::vec3 point;
+		if ( !BotFindRandomPointInRadius( self->s.number, VEC2GLM( ent.ent->s.origin ), point, radius ) )
+		{
+			return STATUS_FAILURE;
+		}
+
+		// The top of the nearest wall/ceiling marker to that ground point is the
+		// elevated build spot; fall back to a ground roam when there are none.
+		glm::vec3 top;
+		float dist = 0.f;
+		if ( !G_BotNearestWallTop( self->s.number, point, top, dist ) )
+		{
+			return STATUS_FAILURE;
+		}
+
+		if ( !BotChangeGoalPos( self, top ) )
+		{
+			return STATUS_FAILURE;
+		}
+		self->botMind->currentNode = node;
+		return STATUS_RUNNING;
+	}
+
+	if ( !self->botMind->goal.isValid() )
+	{
+		return STATUS_FAILURE;
+	}
+
+	// Climb toward the elevated spot; it returns false once the goal's height is
+	// reached, at which point the build flow can take over.
+	if ( BotWallwalkBuildTowardGoal( self ) )
+	{
+		return STATUS_RUNNING;
+	}
+	return STATUS_SUCCESS;
+}
+
 AINodeStatus_t BotActionRoamInRadius( gentity_t *self, AIGenericNode_t *node )
 {
 	AIActionNode_t *a = ( AIActionNode_t * ) node;
 	AIEntity_t e = ( AIEntity_t ) AIUnBoxInt( a->params[ 0 ] );
 	float radius = AIUnBoxFloat( a->params[ 1 ] );
+
+	// A wallwalk-capable builder (the advanced granger is the only wallwalk-capable
+	// class that builds) may instead climb to an elevated build spot when
+	// g_bot_wallwalkBuild is set. When no nearby wall/ceiling exists it returns
+	// STATUS_FAILURE and we fall through to the ground roam below, so every other
+	// class -- and the default behaviour -- is unchanged.
+	if ( g_bot_wallwalkBuild.Get()
+			&& G_Team( self ) == TEAM_ALIENS
+			&& BG_ClassHasAbility( self->client->ps.stats[ STAT_CLASS ], SCA_WALLCLIMBER ) )
+	{
+		AINodeStatus_t status = BotWallwalkBuildRoam( self, node, e, radius );
+		if ( status != STATUS_FAILURE )
+		{
+			return status;
+		}
+	}
 
 	if ( node != self->botMind->currentNode )
 	{
