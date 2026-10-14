@@ -1064,6 +1064,13 @@ AINodeStatus_t BotActionFight( gentity_t *self, AIGenericNode_t *node )
 
 	if ( myTeam == TEAM_ALIENS )
 	{
+		// Wallwalk-capable classes reach a target above them by climbing a wall even
+		// when a ground route exists, so climbing is the primary approach. Jumps/
+		// pounces are suppressed while biting (see BotIsWallClimbing).
+		if ( BotWallwalkClimbTowardGoal( self ) )
+		{
+			return STATUS_RUNNING;
+		}
 		BotClassMovement( self, inAttackRange );
 		return STATUS_RUNNING;
 	}

@@ -37,6 +37,11 @@
 static const int MAX_LAYERS = 32;
 static const int EXPECTED_LAYERS_PER_TILE = 12;
 
+// Must match OffMeshConnections::MAX_CON in sgame/botlib/bot_local.h, which caps
+// how many off-mesh connections a single mesh can carry. Raised alongside it so
+// the finer wallwalk marker grid is not decimated on large maps.
+static const int MAX_WALL_CON = 2048;
+
 struct ladder_t
 {
 	glm::vec3 bottom, up;
@@ -85,7 +90,7 @@ class Geometry
 private:
 float mins[ 3 ];
 float maxs[ 3 ];
-float           *verts;
+float            *verts;
 int nverts;
 rcChunkyTriMesh mesh;
 
@@ -104,11 +109,21 @@ void init( const float *v, int nv, const int *tris, int ntris ){
 	rcCalcBounds( verts, nverts, mins, maxs );
 }
 
-const float           *getMins(){ return mins; }
-const float           *getMaxs() { return maxs; }
-const float           *getVerts() { return verts; }
+const float            *getMins(){ return mins; }
+const float            *getMaxs() { return maxs; }
+const float            *getVerts() { return verts; }
 int                    getNumVerts() { return nverts; }
 const rcChunkyTriMesh *getChunkyMesh() { return &mesh; }
+};
+
+// A single off-mesh connection bridging the ground navmesh to a generated
+// wall/ceiling layer, written to a .navcon file so that wallwalk-capable
+// agents can route onto the wall instead of being stuck on the ground. All
+// coordinates are in recast space.
+struct WallConnection
+{
+	float start[3]; // Ground anchor, original frame, at the base of the wall.
+	float end[3];   // Point on the wall, transformed frame, near the wall poly.
 };
 
 class UnvContext : public rcContext
@@ -148,6 +163,14 @@ struct NavgenTask {
 	int th;
 	int x = 0;
 	int y = 0;
+	// Wallwalk layers are generated for the whole map at once, so only do it once
+	// per task even though Step() is called per ground tile.
+	bool wallLayersGenerated = false;
+	// Off-mesh connections (ground <-> wall/ceiling layers) collected while
+	// generating the wall layers and flushed to a .navcon file in WriteFile().
+	// Empty unless wallwalk is enabled and the class is wallwalk-capable, so the
+	// default navmesh (and its navcon) are byte-for-byte unchanged.
+	std::vector<WallConnection> wallConnections;
 	NavgenStatus status;
 	UnvContext context;
 };
@@ -163,9 +186,9 @@ struct NavgenTask {
 class NavmeshGenerator {
 private:
 	NavgenConfig config_;
-	// Custom computed config for the map
+		// Custom computed config for the map
 	float cellHeight_;
-	// Map data
+		// Map data
 	std::string mapName_;
 	std::string mapData_;
 	Geometry geo_;
@@ -184,6 +207,13 @@ private:
 	void LoadMap(Str::StringRef mapName);
 
 	void WriteFile(const NavgenTask& t);
+
+	// Wall-walk support: rasterize wall/ceiling surfaces (rotated so their
+	// outward normal points "up") into the task's tile cache, tagging the
+	// resulting polygons with POLYFLAGS_WALLWALK. A no-op when wallwalk is
+	// disabled via navcfg, so the default navmesh is unaffected.
+	void GenerateWallLayers( NavgenTask &t );
+	bool IsWallwalkSupported() const;
 
 public:
 	~NavmeshGenerator();

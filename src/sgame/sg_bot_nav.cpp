@@ -517,8 +517,32 @@ void BotStandStill( gentity_t *self )
 	botCmdBuffer->upmove = 0;
 }
 
+// Wallwalk-capable classes (dretch, mantis, advanced granger) "bite" on a wall to
+// climb to a target above them. A jump or pounce issued mid-climb pops the bot off
+// the wall, so for g_bot_wallwalkClimbHoldTime milliseconds after a climb is issued
+// we suppress jumps/pounces and keep the bite alive. Declared here (before BotJump)
+// because BotJump needs the hold window; the sibling wallwalk cvars live further down.
+static Cvar::Cvar<int> g_bot_wallwalkClimbHoldTime(
+	"g_bot_wallwalkClimbHoldTime", "how long (ms) after issuing a wall climb a wallwalk-capable bot keeps biting instead of jumping/pouncing, so it doesn't pop off the wall", Cvar::NONE, 500 );
+
+// True when a wallwalk-capable bot recently issued a wall climb and is therefore
+// still biting on the wall. During this window jumps/pounces are suppressed and the
+// climb is kept alive, so the bot finishes reaching the target instead of whiffing.
+static bool BotIsWallClimbing( gentity_t *self )
+{
+	return BG_ClassHasAbility( self->client->ps.stats[ STAT_CLASS ], SCA_WALLCLIMBER )
+		&& level.time - self->botMind->lastWallClimbTime < g_bot_wallwalkClimbHoldTime.Get();
+}
+
 bool BotJump( gentity_t *self )
 {
+	// Don't pop a bot off a wall it is currently biting: suppress jumps while the
+	// wallwalk hold window is active.
+	if ( BotIsWallClimbing( self ) )
+	{
+		return false;
+	}
+
 	if ( self->client->pers.team == TEAM_HUMANS )
 	{
 		int staminaJumpCost = BG_Class( self->client->ps.stats[ STAT_CLASS ] )->staminaJumpCost;
@@ -923,6 +947,20 @@ Global Bot Navigation
 static Cvar::Cvar<int> g_bot_upwardNavconMinHeight("g_bot_upwardNavconMinHeight", "minimal height difference for bots to use special upward movement.", Cvar::NONE, 100);
 static Cvar::Cvar<int> g_bot_upwardLeapAngleCorr("g_bot_upwardLeapAngleCorr", "is added to the angle for mantis and dragoon when leaping upward (in degrees).", Cvar::NONE, 20);
 
+// Wallwalk-capable classes (dretch, mantis, advanced granger) reach a target that
+// is above them by climbing a wall/ceiling when they are at its base. These cvars
+// gate and tune that (experimental) behaviour without a rebuild.
+static Cvar::Cvar<bool> g_bot_wallwalkClimb(
+	"g_bot_wallwalkClimb", "allow wallwalk-capable bots to climb walls/ceilings to reach a target above them", Cvar::NONE, true );
+static Cvar::Cvar<float> g_bot_wallwalkClimbMinHeight(
+	"g_bot_wallwalkClimbMinHeight", "minimum height difference (quake units) above the bot before it climbs to a target", Cvar::NONE, 150 );
+static Cvar::Cvar<float> g_bot_wallwalkClimbRange(
+	"g_bot_wallwalkClimbRange", "horizontal distance within which a bot counts as being at the base of a climbable wall", Cvar::NONE, 400 );
+static Cvar::Cvar<float> g_bot_wallwalkSeekRange(
+	"g_bot_wallwalkSeekRange", "how far a wallwalk-capable bot will walk toward the nearest wall base to reach a climb point for a target above it; 0 disables this and falls back to jumping", Cvar::NONE, 800 );
+static Cvar::Cvar<bool> g_bot_wallwalkDebug(
+	"g_bot_wallwalkDebug", "log wallwalk climb-trigger diagnostics for wallwalk-capable bots (throttled)", Cvar::NONE, false );
+
 static int WallclimbStopTime( gentity_t *self )
 {
 	// experiments suggest an appropriate value of 4 milliseconds per distance
@@ -974,17 +1012,145 @@ static void BotMaybeAttackWhileClimbing( gentity_t *self )
 	}
 }
 
+// Aim at `targetPos` and issue the class-specific climb command (the dretch /
+// mantis / advanced granger wall-walk), then attack anything in range while
+// climbing. Shared by the corner-driven climb (below) and the goal-driven climb
+// for reaching a target that is above the bot on a wall or ceiling.
+static void BotClimbToward( gentity_t *self, const glm::vec3 &targetPos )
+{
+	BotAimAtLocation( self, targetPos );
+	self->botMind->cmdBuffer.upmove = -127;
+	self->botMind->cmdBuffer.forwardmove = 127;
+	self->botMind->cmdBuffer.rightmove = 0;
+	// Stamp the climb so the hold window keeps the bot biting and suppresses jumps
+	// until the target is reached (see BotIsWallClimbing).
+	self->botMind->lastWallClimbTime = level.time;
+	BotMaybeAttackWhileClimbing( self );
+}
+
 // could use BG_ClassHasAbility( pcl, SCA_WALLCLIMBER ) to check if calling
 // this is a good idea
 static void BotClimbToGoal( gentity_t *self )
 {
 	glm::vec3 ownPos = VEC2GLM( self->s.origin );
 	glm::vec3 dir = self->botMind->nav().dir;
-	BotAimAtLocation( self, ownPos + 100.f * dir );
-	self->botMind->cmdBuffer.upmove = -127;
-	self->botMind->cmdBuffer.forwardmove = 127;
-	self->botMind->cmdBuffer.rightmove = 0;
-	BotMaybeAttackWhileClimbing( self );
+	BotClimbToward( self, ownPos + 100.f * dir );
+}
+
+// Wallwalk-capable classes (dretch, mantis, advanced granger) reach a target that
+// is above them by climbing a wall/ceiling. When the goal is above the bot and the
+// bot is at the base of a generated wall (near a bridge connection), aim at the
+// goal and issue the climb command. This bypasses the ground route, whose next
+// corner is on the floor and can therefore never trigger the corner-driven climb
+// above. Returns true when a climb was issued (so the caller skips normal movement).
+//
+// Gated behind g_bot_wallwalkClimb, with g_bot_wallwalkClimbMinHeight and
+// g_bot_wallwalkClimbRange controlling when it fires, so the (experimental)
+// behaviour can be tuned or disabled without a rebuild.
+bool BotWallwalkClimbTowardGoal( gentity_t *self )
+{
+	if ( !g_bot_wallwalkClimb.Get() )
+	{
+		return false;
+	}
+
+	const int classNum = self->client->ps.stats[ STAT_CLASS ];
+	if ( !BG_ClassHasAbility( classNum, SCA_WALLCLIMBER ) )
+	{
+		return false;
+	}
+
+	const botTarget_t &goal = self->botMind->goal;
+	if ( !goal.targetsValidEntity() )
+	{
+		return false;
+	}
+
+	glm::vec3 ownPos = VEC2GLM( self->s.origin );
+	glm::vec3 targetPos = goal.getPos();
+
+	// A climb is in progress (within the hold window) and the target is still above
+	// us: keep biting on the wall so we finish reaching it instead of being popped
+	// off by a jump/pounce. When the target drops to/below our height, stop climbing
+	// and let ordinary combat take over.
+	if ( BotIsWallClimbing( self ) && targetPos.z > ownPos.z )
+	{
+		BotClimbToward( self, targetPos );
+		return true;
+	}
+
+	// Only reach for a target that is meaningfully above us. A target within this
+	// height is close enough that a jump/pounce lands on it (an "instant hit"), so
+	// we leave it to the ordinary upward movement below and don't climb.
+	const float heightDiff = targetPos.z - ownPos.z;
+	if ( heightDiff < g_bot_wallwalkClimbMinHeight.Get() )
+	{
+		return false;
+	}
+
+	// Locate the nearest base-of-wall marker. There may be none in this mesh, in
+	// which case climbing is impossible and we fall back to jumping.
+	glm::vec3 markerPos;
+	float markerDist = 0.f;
+	const bool hasWall = G_BotNearestWallConnection( self->s.number, ownPos, markerPos, markerDist );
+
+	// Throttled diagnostics so the climb path can be observed without a rebuild.
+	static int s_nextLog = 0;
+	const bool wantDebug = g_bot_wallwalkDebug.Get();
+	const float seekRange = g_bot_wallwalkSeekRange.Get();
+
+	// At the base of a wall (within the climb range): climb up toward the target.
+	if ( hasWall && markerDist <= g_bot_wallwalkClimbRange.Get() )
+	{
+		if ( wantDebug && level.time >= s_nextLog )
+		{
+			s_nextLog = level.time + 1000;
+			Log::Notice( "Wallwalk: client %d (%s) has target %.0f above, at a wall base (%.0f away) -> climbing",
+				self->s.number, BG_Class( classNum )->name, heightDiff, markerDist );
+		}
+		BotClimbToward( self, targetPos );
+		return true;
+	}
+
+	// Not at a wall base yet. Climbing is the preferred way to reach a target this
+	// high (a jump would not land on it), so walk toward the nearest wall base to
+	// arrive at a climbable spot and then climb. This makes wallwalk the primary
+	// approach for a target above the bot, rather than an incidental one. Bounded by
+	// g_bot_wallwalkSeekRange so we don't chase a wall across the whole map; 0
+	// disables it and falls through to the ordinary upward movement (jump) below.
+	if ( hasWall && seekRange > 0.f && markerDist <= seekRange )
+	{
+		if ( wantDebug && level.time >= s_nextLog )
+		{
+			s_nextLog = level.time + 1000;
+			Log::Notice( "Wallwalk: client %d (%s) has target %.0f above, walking to a wall base %.0f away",
+				self->s.number, BG_Class( classNum )->name, heightDiff, markerDist );
+		}
+		// Walk horizontally toward the wall base; BotSeek handles the aim. The z is
+		// zeroed so we head to the base and let the climb (above) take us up from
+		// there rather than aiming up at the target from the ground.
+		glm::vec3 toMarker = markerPos - ownPos;
+		toMarker.z = 0.f;
+		BotSeek( self, toMarker );
+		return true;
+	}
+
+	if ( wantDebug && level.time >= s_nextLog )
+	{
+		s_nextLog = level.time + 1000;
+		if ( !hasWall )
+		{
+			Log::Notice( "Wallwalk: client %d (%s) has target %.0f above, no wall marker in mesh",
+				self->s.number, BG_Class( classNum )->name, heightDiff );
+		}
+		else
+		{
+			Log::Notice( "Wallwalk: client %d (%s) has target %.0f above, nearest wall base %.0f away (beyond seek range %.0f)",
+				self->s.number, BG_Class( classNum )->name, heightDiff, markerDist, seekRange );
+		}
+	}
+
+	return false;
 }
 
 void BotMoveUpward( gentity_t *self, glm::vec3 nextCorner )
@@ -999,7 +1165,9 @@ void BotMoveUpward( gentity_t *self, glm::vec3 nextCorner )
 		BotClimbToGoal( self );
 		break;
 	case PCL_ALIEN_LEVEL1:
-		if ( level.time < WallclimbStopTime( self ) )
+		// Keep biting the wall (rather than pounce and pop off) while a climb is in
+		// progress, and continue the goal-driven climb during its hold window.
+		if ( level.time < WallclimbStopTime( self ) || BotIsWallClimbing( self ) )
 		{
 			BotClimbToGoal( self );
 			return;
@@ -1113,6 +1281,17 @@ static bool BotTryMoveUpward( gentity_t *self )
 		nextCorner = self->botMind->nav().tpos;
 	}
 
+	// A wallwalk-capable class (dretch, mantis, advanced granger) whose route
+	// leads onto a wall/ceiling polygon must climb onto it. A horizontal wall
+	// has no upward component, so this bypasses the height-difference check
+	// below and drives the class-specific climb via BotMoveUpward().
+	if ( BG_ClassHasAbility( self->client->ps.stats[ STAT_CLASS ], SCA_WALLCLIMBER )
+			&& G_BotNextCornerIsWallwalk( selfClientNum ) )
+	{
+		BotMoveUpward( self, nextCorner );
+		return true;
+	}
+
 	// if not trying to move upward
 	if ( nextCorner.z - ownPos.z < g_bot_upwardNavconMinHeight.Get() )
 	{
@@ -1200,6 +1379,16 @@ bool BotMoveToGoal( gentity_t *self )
 
 	bool ignoreGeometry = stuckTime < ignoreGeometryThreshold;
 	obstacle_t obstacle = OBSTACLE_NONE;
+
+	// Wallwalk-capable classes reach a target that is above them by climbing a
+	// wall/ceiling when they are at its base. This bypasses the ground route and
+	// must win over the ordinary upward check below (whose next corner is on the
+	// floor and can never trigger the climb). Gated behind g_bot_wallwalkClimb.
+	if ( BotWallwalkClimbTowardGoal( self ) )
+	{
+		return true;
+	}
+
 	if ( BotAvoidObstacles( self, dir, ignoreGeometry, obstacle ) )
 	{
 		if ( BotTryMoveUpward( self ) )

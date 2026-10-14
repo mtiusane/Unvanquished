@@ -32,6 +32,7 @@ ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 */
 
 #include "common/Common.h"
+#include <cmath>
 #include "bot_local.h"
 #include "bot_api.h"
 #include "sgame/sg_local.h"
@@ -135,9 +136,44 @@ void G_BotSetNavMesh( gentity_t *ent )
 	{
 		polyflags |= POLYFLAGS_JETPACK;
 	}
+	// Wallwalk-capable classes (dretch, mantis, advanced granger) may also traverse
+	// polygons tagged POLYFLAGS_WALLWALK. We no longer generate extra wall layers to
+	// route onto (a recast tile cache's single global up-vector makes rotated wall
+	// tiles unroutable), so this only matters for the climb trigger, which detects
+	// proximity to the base-of-wall markers rather than routing onto a wall poly.
+	// Non-wallwalk classes are unaffected because their filter never includes
+	// POLYFLAGS_WALLWALK.
+	const bool classWallwalk = BG_ClassHasAbility( ent->client->ps.stats[ STAT_CLASS ], SCA_WALLCLIMBER );
+	if ( classWallwalk )
+	{
+		polyflags |= POLYFLAGS_WALLWALK;
+	}
 	bot.filter.setIncludeFlags( polyflags );
 
 	bot.nav = nav;
+
+	// Report how many base-of-wall markers this class's mesh carries, so the climb
+	// path can be observed to actually have data to work with. A zero means no
+	// markers were generated/loaded and the bot can never climb, but we stay quiet
+	// on that case (the trigger's own "no nearby wall marker" diagnostic covers it)
+	// to avoid logging on every class change.
+	if ( classWallwalk )
+	{
+		const OffMeshConnections &con = nav->process.con;
+		int wallCon = 0;
+		for ( int i = 0; i < con.offMeshConCount; ++i )
+		{
+			if ( con.flags[ i ] & POLYFLAGS_WALLWALK )
+			{
+				++wallCon;
+			}
+		}
+		if ( wallCon > 0 )
+		{
+			Log::Notice( "Wallwalk: %s navmesh has %d of %d off-mesh connection marker(s) at wall bases",
+				BG_Class( newClass )->name, wallCon, con.offMeshConCount );
+		}
+	}
 	float clearVec[3]{};
 	bot.corridor.reset( 0, clearVec );
 	bot.clientNum = ent->num();
@@ -200,6 +236,100 @@ bool G_IsBotOverNavcon( int botClientNum )
 	Bot_t *bot = &agents[ botClientNum ];
 	GetEntPosition( botClientNum, spos );
 	return overOffMeshConnectionStart( bot, spos );
+}
+
+// Returns true when the bot's immediate next path corner lies on a polygon that
+// was generated as a wall/ceiling layer (tagged POLYFLAGS_WALLWALK). This lets
+// a wallwalk-capable class decide it must climb onto the wall rather than walk
+// across the ground to the corner.
+bool G_BotNextCornerIsWallwalk( int botClientNum )
+{
+	Bot_t *bot = &agents[ botClientNum ];
+	if ( !bot->nav || bot->numCorners < 1 )
+	{
+		return false;
+	}
+
+	dtPolyRef poly = bot->cornerPolys[ bot->numCorners - 1 ];
+	if ( !poly )
+	{
+		return false;
+	}
+
+	unsigned short flags = 0;
+	if ( dtStatusFailed( bot->nav->mesh->getPolyFlags( poly, &flags ) ) )
+	{
+		return false;
+	}
+
+	return ( flags & navPolyFlags::POLYFLAGS_WALLWALK ) != 0;
+}
+
+// Finds the base-of-wall off-mesh connection (tagged POLYFLAGS_WALLWALK) closest to
+// the bot and reports it, so a wallwalk-capable class knows where the nearest
+// climbable wall is even when it is not yet standing at a wall base.
+//
+// Returns true and sets `markerPos` to the connection's start (the wall base, at the
+// map floor) and `markerDist` to the horizontal distance from `ownPos` to it, when at
+// least one such connection exists. Returns false when there are none, which means
+// climbing is impossible for this bot and the caller should fall back to ordinary
+// upward (jumping) movement.
+//
+// `ownPos` and `markerPos` are both in the quake coordinate system (Z up), which is
+// what the caller (BotWallwalkClimbTowardGoal) expects. The stored marker coordinates
+// are in the recast frame (Y up), so the start is converted with ToQuake() before being
+// handed back. Only the bridge connections emitted for wallwalk-capable classes carry
+// POLYFLAGS_WALLWALK, so this never matches hand-authored navcons.
+bool G_BotNearestWallConnection( int botClientNum, const glm::vec3 &ownPos, glm::vec3 &markerPos, float &markerDist )
+{
+	Bot_t *bot = &agents[ botClientNum ];
+	if ( !bot->nav )
+	{
+		return false;
+	}
+
+	const OffMeshConnections &con = bot->nav->process.con;
+	if ( con.offMeshConCount == 0 )
+	{
+		return false;
+	}
+
+	rVec spos( ownPos );
+	bool found = false;
+	float bestDistSq = 1e18f;
+	for ( int i = 0; i < con.offMeshConCount; ++i )
+	{
+		if ( ( con.flags[ i ] & navPolyFlags::POLYFLAGS_WALLWALK ) == 0 )
+		{
+			continue; // only generated wall/ceiling bridge connections
+		}
+
+		rVec start = rVec::Load( &con.verts[ i * 6 + 0 ] );
+		// The marker start and spos are both in the recast frame (Y up), so the
+		// horizontal separation (recast x/z, which is quake x/y) is compared directly.
+		// A bot at the base of a tall wall still matches because only the horizontal
+		// distance is used.
+		const float dx = start[ 0 ] - spos[ 0 ];
+		const float dz = start[ 2 ] - spos[ 2 ];
+		const float d2 = dx * dx + dz * dz;
+		if ( d2 < bestDistSq )
+		{
+			bestDistSq = d2;
+			found = true;
+			// Hand the caller a quake-space (Z up) position: the stored start is in the
+			// recast frame, so convert it. This is the base of the wall the bot should
+			// walk toward and climb from.
+			markerPos = start.ToQuake();
+		}
+	}
+
+	if ( !found )
+	{
+		return false;
+	}
+
+	markerDist = std::sqrt( bestDistSq );
+	return true;
 }
 
 static void G_UpdatePathCorridor( Bot_t *bot, rVec spos, botRouteTargetInternal target )

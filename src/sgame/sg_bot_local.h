@@ -185,6 +185,9 @@ private:
 public:
 		int lastNavconTime;
 		int lastNavconDistance;
+		// last time (level.time) this bot issued a wall climb; keeps the bot biting on
+		// the wall and suppresses jumps/pounces for g_bot_wallwalkClimbHoldTime ms
+		int lastWallClimbTime;
 		bool hasOffmeshGoal;
 	// }
 
@@ -231,6 +234,14 @@ bool G_BotFindRoute( int botClientNum, const botRouteTarget_t *target, bool allo
 bool G_BotPathNextCorner( int botClientNum, glm::vec3 &result );
 void G_BotUpdatePath( int botClientNum, const botRouteTarget_t *target, botNavCmd_t *cmd );
 bool G_IsBotOverNavcon( int botClientNum );
+// True when the bot's next path corner lies on a wall/ceiling polygon
+// (tagged POLYFLAGS_WALLWALK), so a wallwalk-capable class can climb onto it.
+bool G_BotNextCornerIsWallwalk( int botClientNum );
+// Finds the base-of-wall off-mesh connection (POLYFLAGS_WALLWALK) closest to the
+// bot: returns true and sets `markerPos`/`markerDist` to the nearest one when any
+// exist, else false (climbing impossible). Lets a wallwalk-capable class walk to a
+// wall base even when it isn't standing at one yet.
+bool G_BotNearestWallConnection( int botClientNum, const glm::vec3 &ownPos, glm::vec3 &markerPos, float &markerDist );
 bool G_BotNavTrace( int botClientNum, botTrace_t *botTrace, const glm::vec3& start, const glm::vec3& end );
 glm::vec3 ProjectPointOntoVector( const glm::vec3 &point, const glm::vec3 &linePoint1, const glm::vec3 &linePoint2 );
 

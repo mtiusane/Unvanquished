@@ -118,6 +118,10 @@ void         G_BotNavInit( int generateNeeded );
 void         G_BotNavCleanup();
 bool     FindRouteToTarget( gentity_t *self, botTarget_t target, bool allowPartial );
 bool         BotMoveToGoal( gentity_t *self );
+// Wallwalk-capable classes (dretch, mantis, advanced granger) reach a target above
+// them by climbing a wall/ceiling. Returns true when a climb (or walk-to-base) was
+// issued, so the caller skips ordinary movement. Gated behind g_bot_wallwalkClimb.
+bool         BotWallwalkClimbTowardGoal( gentity_t *self );
 void         BotMoveUpward( gentity_t *self, glm::vec3 target );
 
 // local navigation

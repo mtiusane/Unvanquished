@@ -78,7 +78,7 @@ struct OffMeshConnection
 
 struct OffMeshConnections
 {
-	static CONSTEXPR int MAX_CON = 128;
+	static CONSTEXPR int MAX_CON = 2048; // raised from 128: denser wallwalk markers need a larger per-mesh budget
 	float  verts[ MAX_CON * 6 ]; // dtOffMeshConnection::pos
 	float  rad[ MAX_CON ]; // dtOffMeshConnection::rad
 	unsigned short flags[ MAX_CON ]; // dtOffMeshConnection::poly

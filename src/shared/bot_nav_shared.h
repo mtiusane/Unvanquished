@@ -46,14 +46,26 @@ ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 #include "fastlz/fastlz.h"
 
 static const int NAVMESHSET_MAGIC = 'M'<<24 | 'S'<<16 | 'E'<<8 | 'T'; //'MSET';
-static const int NAVMESHSET_VERSION = 10; // Increment when navgen algorithm or data format changes
+static const int NAVMESHSET_VERSION = 13; // Increment when navgen algorithm or data format changes
+// 13: wallwalk markers are now emitted on a much finer (128-unit) grid and the
+// per-mesh marker cap was raised, so cached meshes must be regenerated.
 
 enum navPolyFlags
 {
 	POLYFLAGS_DISABLED = 0,
-	POLYFLAGS_WALK     = 1 << 0,
-	POLYFLAGS_JETPACK  = 1 << 1,
-	POLYFLAGS_ALL      = 0xffff, // All abilities.
+	POLYFLAGS_WALK      = 1 << 0,
+	POLYFLAGS_JETPACK   = 1 << 1,
+	POLYFLAGS_WALLWALK  = 1 << 2, // Wallwalking is supported by this polygon
+	POLYFLAGS_ALL       = 0xffff, // All abilities.
+};
+
+// Orientation bitmask for wallwalking layers
+enum navPolyOrientations
+{
+	NAV_WALL_XPOS = 1,		// +X wall (facing in +X direction)
+	NAV_WALL_XNEG = 2,		// -X wall (facing in -X direction)
+	NAV_WALL_YPOS = 4,		// +Y wall (facing in +Y direction) 
+	NAV_WALL_YNEG = 8,		// -Y wall (facing in -Y direction)
 };
 
 enum navPolyAreas
@@ -74,7 +86,15 @@ struct NavgenConfig {
 	float cellSizeFactor;
 	float walkableRadiusFactor;
 
-	static NavgenConfig Default() { return { 2.0f, STEPSIZE, 1, 1, 1, 1, 0.5f, false, 0.25f, 1.0f }; }
+	navPolyFlags polyFlags; // bitmask of supported navigation abilities (e.g., wallwalking, jetpack)
+	int wallwalkOrientationMask; // bitfield: NAV_WALL_XPOS=1, NAV_WALL_XNEG=2, NAV_WALL_YPOS=4, NAV_WALL_YNEG=8
+
+	// wallwalkOrientationMask defaults to the wall/ceiling orientations so that the
+	// automatic navmesh generation (run when a navmesh file is missing) produces
+	// wall/ceiling layers and bridge connections out of the box, without needing a
+	// per-map navcfg. Non-wallwalk classes skip the whole pass (see
+	// GenerateWallLayers), so their meshes are unaffected. Set to 0 to disable.
+	static NavgenConfig Default() { return { 2.0f, STEPSIZE, 1, 1, 1, 1, 0.5f, false, 0.25f, 1.0f, POLYFLAGS_WALK, NAV_WALL_XPOS | NAV_WALL_XNEG | NAV_WALL_YNEG }; }
 };
 
 struct NavgenMapIdentification
@@ -179,6 +199,11 @@ struct FastLZCompressor : public dtTileCacheCompressor
 
 struct BasicMeshProcess : public dtTileCacheMeshProcess
 {
+	// When true, walkable polys are tagged POLYFLAGS_WALLWALK instead of
+	// POLYFLAGS_WALK, so only wallwalk-capable agents (whose poly filter
+	// includes POLYFLAGS_WALLWALK) can traverse the resulting polygons.
+	bool wallwalk = false;
+
 	void process( struct dtNavMeshCreateParams *params, unsigned char *polyAreas, unsigned short *polyFlags ) override
 	{
 		// wtf is a poly area?
@@ -187,7 +212,9 @@ struct BasicMeshProcess : public dtTileCacheMeshProcess
 			if ( polyAreas[ i ] == DT_TILECACHE_WALKABLE_AREA )
 			{
 				polyAreas[ i ] = navPolyAreas::POLYAREA_GROUND;
-				polyFlags[ i ] = navPolyFlags::POLYFLAGS_WALK;
+				polyFlags[ i ] = wallwalk
+					? navPolyFlags::POLYFLAGS_WALLWALK
+					: navPolyFlags::POLYFLAGS_WALK;
 			}
 			else
 			{

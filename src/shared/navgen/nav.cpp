@@ -28,6 +28,9 @@
 #include <queue>
 #include <map>
 #include <unordered_set>
+#include <unordered_map>
+#include <algorithm>
+#include <cstdint>
 
 #include <glm/gtx/string_cast.hpp>
 #include <glm/gtx/hash.hpp>
@@ -206,6 +209,50 @@ void NavmeshGenerator::WriteFile( const NavgenTask &t ) {
 		if ( !Write( data.get(), tile->dataSize ) ) return;
 	}
 	trap_FS_FCloseFile( file );
+
+	// Write the off-mesh connections (ground <-> wall layers) to a .navcon file
+	// so that wallwalk-capable agents can route onto the generated wall layers.
+	// Only wallwalk-capable classes produce any (see GenerateWallLayers), so
+	// non-wallwalk meshes and their navcon files are unaffected.
+	if ( t.status.code == NavgenStatus::OK && !t.wallConnections.empty() )
+	{
+		// Match the text format BotLoadOffMeshConnections expects.
+		static const int NAVCON_VERSION = 3;
+		static const char *NAVCON_HEADER_PREFIX = "navcon";
+		// Endpoint snap radius for the connection (cf. DEFAULT_CONNECTION_SIZE).
+		static const float WALLCON_RADIUS = 50.f;
+
+		std::string conName = Str::Format( "maps/%s-%s.navcon", mapName_, BG_Class( t.species )->name );
+		qhandle_t conFile;
+		trap_FS_FOpenFile( conName.c_str(), &conFile, fsMode_t::FS_WRITE );
+
+		if ( conFile )
+		{
+			LOG.Notice( "Writing %zu off-mesh connection(s) to %s",
+				t.wallConnections.size(), conName.c_str() );
+
+			char buffer[ 256 ];
+			int len = snprintf( buffer, sizeof( buffer ), "%s %d\n", NAVCON_HEADER_PREFIX, NAVCON_VERSION );
+			trap_FS_Write( buffer, len, conFile );
+
+			for ( const WallConnection &con : t.wallConnections )
+			{
+				len = snprintf( buffer, sizeof( buffer ),
+					"%.0f %.0f %.0f %.0f %.0f %.0f %.0f %d %d %d\n",
+					con.start[ 0 ], con.start[ 1 ], con.start[ 2 ],
+					con.end[ 0 ], con.end[ 1 ], con.end[ 2 ],
+					WALLCON_RADIUS, navPolyFlags::POLYFLAGS_WALLWALK,
+					DT_TILECACHE_WALKABLE_AREA, DT_OFFMESH_CON_BIDIR );
+				trap_FS_Write( buffer, len, conFile );
+			}
+
+			trap_FS_FCloseFile( conFile );
+		}
+		else
+		{
+			LOG.Warn( "Failed to open navcon file %s", conName.c_str() );
+		}
+	}
 }
 
 void NavmeshGenerator::LoadBSP()
@@ -1097,6 +1144,14 @@ std::unique_ptr<NavgenTask> NavmeshGenerator::StartGeneration( class_t species )
 	t->tcparams.walkableClimb = climb;
 	t->tcparams.maxSimplificationError = 1.3;
 	t->tcparams.maxTiles = t->tw * t->th * EXPECTED_LAYERS_PER_TILE;
+	// Keep extra tile-cache headroom even though wallwalk no longer rasterizes
+	// rotated layers into the cache (those were dropped as unroutable; see
+	// GenerateWallLayers): it is harmless capacity and spares a change if a future
+	// revision ever adds walkable wall polys back.
+	if ( IsWallwalkSupported() )
+	{
+		t->tcparams.maxTiles *= 5;
+	}
 	t->tcparams.maxObstacles = 256;
 
 	t->tileCache.reset(new dtTileCache);
@@ -1125,7 +1180,193 @@ std::unique_ptr<NavgenTask> NavmeshGenerator::PopTask()
 
 float NavmeshGenerator::FractionComplete() const
 {
-	return float(fractionCompleteNumerator_) / float(fractionCompleteDenominator_);
+	return float( fractionCompleteNumerator_ ) / float( fractionCompleteDenominator_ );
+}
+
+bool NavmeshGenerator::IsWallwalkSupported() const
+{
+	return config_.wallwalkOrientationMask != 0;
+}
+
+// Emits off-mesh connection markers at the base of every on-axis wall/ceiling of
+// the map, tagged POLYFLAGS_WALLWALK, so that a wallwalk-capable class knows it
+// can climb from its current spot toward a target that is above it (see
+// G_BotNearWallConnection and BotWallwalkClimbTowardGoal in sg_bot_nav.cpp).
+// It is a no-op unless wallwalk was requested via navcfg
+// (wallwalkOrientationMask != 0), so the default navigation mesh (and its
+// navcon) is unchanged. No rotated tiles are rasterized: a recast tile cache
+// has a single global "up" vector, so a wall rotated to lie flat cannot be
+// routed onto (see the body for the full rationale).
+void NavmeshGenerator::GenerateWallLayers( NavgenTask &t )
+{
+	if ( !IsWallwalkSupported() || t.status.code != NavgenStatus::OK )
+	{
+		return;
+	}
+
+	// Only wallwalk-capable classes produce the bridge markers (their
+	// POLYFLAGS_WALLWALK flag is filtered out for everyone else anyway), so skip
+	// the pass for other classes to keep their navcon empty/unchanged. We no
+	// longer rasterize rotated wall/ceiling tiles into the shared cache: a recast
+	// tile cache assumes a single global "up" vector, so a wall rotated to lie
+	// flat lands on the ground cache's grid at a position that does not match its
+	// real world location and findNearestPoly() of a world position never finds
+	// it, so routing a bot ONTO such a tile does not work. Instead we emit off-mesh
+	// connection markers at the base of each wall and let a wallwalk-capable bot
+	// climb toward a target that is above it (see G_BotNearWallConnection and
+	// BotWallwalkClimbTowardGoal in sg_bot_nav.cpp).
+	if ( !BG_ClassHasAbility( t.species, SCA_WALLCLIMBER ) )
+	{
+		return;
+	}
+
+	const float *worldVerts = geo_.getVerts();
+	const int worldNumVerts = geo_.getNumVerts();
+	const rcChunkyTriMesh *worldMesh = geo_.getChunkyMesh();
+	if ( !worldVerts || worldNumVerts == 0 || !worldMesh || worldMesh->ntris == 0 )
+	{
+		return;
+	}
+
+	// A wall/ceiling triangle counts as "on axis" for this pass when its normal
+	// points roughly along one of the enabled wall directions. The squared test
+	// (a component exceeds half the normal's length, i.e. steeper than 60 deg
+	// from that axis) rejects diagonal surfaces and avoids a sqrt.
+	const int mask = config_.wallwalkOrientationMask;
+	const float floorY = geo_.getMins()[ 1 ];
+	// Marker grid spacing in quake units. A finer grid places a base-of-wall
+	// marker closer to any point on a wall so a wallwalk-capable bot standing
+	// anywhere at a wall base finds one within g_bot_wallwalkClimbRange. The cap
+	// (MAX_WALL_CON) is the only reason the grid can't go arbitrarily fine: a large
+	// map with more cells than the budget has the surplus sampled out (below).
+	const float grid = 128.f;
+
+	// Cluster on-axis wall triangles into world XZ grid cells so the connection
+	// markers are spread across the whole map. The previous code stride-sampled
+	// the raw triangle list, which scattered (and often clustered) the markers and
+	// left large stretches of wall uncovered, so a bot standing at a wall base
+	// could find no nearby marker and never climb. Each non-empty cell contributes
+	// at most one marker at that wall's base.
+	struct WallCluster { float minY, maxY; };
+	std::unordered_map< std::uint64_t, WallCluster > clusters;
+
+	for ( int ti = 0; ti < worldMesh->ntris; ++ti )
+	{
+		const int i0 = worldMesh->tris[ ti * 3 + 0 ];
+		const int i1 = worldMesh->tris[ ti * 3 + 1 ];
+		const int i2 = worldMesh->tris[ ti * 3 + 2 ];
+
+		const float ax = worldVerts[ i0 * 3 + 0 ], ay = worldVerts[ i0 * 3 + 1 ], az = worldVerts[ i0 * 3 + 2 ];
+		const float bx = worldVerts[ i1 * 3 + 0 ], by = worldVerts[ i1 * 3 + 1 ], bz = worldVerts[ i1 * 3 + 2 ];
+		const float cx = worldVerts[ i2 * 3 + 0 ], cy = worldVerts[ i2 * 3 + 1 ], cz = worldVerts[ i2 * 3 + 2 ];
+
+		const float e1x = bx - ax, e1y = by - ay, e1z = bz - az;
+		const float e2x = cx - ax, e2y = cy - ay, e2z = cz - az;
+		const float nx = e1y * e2z - e1z * e2y;
+		const float ny = e1z * e2x - e1x * e2z;
+		const float nz = e1x * e2y - e1y * e2x;
+		const float n2 = nx * nx + ny * ny + nz * nz;
+		if ( n2 < 1e-6f )
+		{
+			continue; // degenerate triangle
+		}
+
+		bool onAxis = false;
+		if ( mask & navPolyOrientations::NAV_WALL_XPOS && nx > 0.f && nx * nx > 0.25f * n2 )
+			onAxis = true;
+		else if ( mask & navPolyOrientations::NAV_WALL_XNEG && nx < 0.f && nx * nx > 0.25f * n2 )
+			onAxis = true;
+		else if ( mask & navPolyOrientations::NAV_WALL_YPOS && ny > 0.f && ny * ny > 0.25f * n2 )
+			onAxis = true;
+		else if ( mask & navPolyOrientations::NAV_WALL_YNEG && ny < 0.f && ny * ny > 0.25f * n2 )
+			onAxis = true;
+
+		if ( !onAxis )
+		{
+			continue;
+		}
+
+		// World-frame centroid (X/Z place it horizontally, Y is up).
+		const float px = ( ax + bx + cx ) / 3.f;
+		const float py = ( ay + by + cy ) / 3.f;
+		const float pz = ( az + bz + cz ) / 3.f;
+
+		// Bucket by world XZ; one cluster per cell tracks the wall's vertical
+		// extent so the marker can aim up the top of the wall.
+		const int gx = int( floorf( px / grid ) );
+		const int gz = int( floorf( pz / grid ) );
+		const std::uint64_t key = ( ( std::uint64_t ) static_cast<std::uint32_t>( gx ) << 32 )
+			| static_cast<std::uint32_t>( gz );
+
+		auto it = clusters.find( key );
+		if ( it == clusters.end() )
+		{
+			clusters.emplace( key, WallCluster{ py, py } );
+		}
+		else
+		{
+			WallCluster &c = it->second;
+			if ( py < c.minY ) c.minY = py;
+			if ( py > c.maxY ) c.maxY = py;
+		}
+	}
+
+	// Flatten the clusters and cap at MAX_WALL_CON, sampling evenly across the
+	// grid when there are more cells than the budget (the mesh's off-mesh-
+	// connection storage cap, OffMeshConnections::MAX_CON) so the markers stay
+	// spread over the map instead of clustering in the early cells.
+	struct Cell { int gx, gz; float minY, maxY; };
+	std::vector< Cell > cells;
+	cells.reserve( clusters.size() );
+	for ( auto &kv : clusters )
+	{
+		Cell c;
+		c.gx = static_cast<int32_t>( kv.first >> 32 );
+		c.gz = static_cast<int32_t>( kv.first & 0xffffffffu );
+		c.minY = kv.second.minY;
+		c.maxY = kv.second.maxY;
+		cells.push_back( c );
+	}
+	std::sort( cells.begin(), cells.end(), []( const Cell &a, const Cell &b ) {
+		return a.gx != b.gx ? a.gx < b.gx : a.gz < b.gz;
+	} );
+
+	const int total = static_cast<int>( cells.size() );
+	int stride = 1;
+	if ( total > MAX_WALL_CON )
+	{
+		stride = ( total + MAX_WALL_CON - 1 ) / MAX_WALL_CON;
+	}
+
+	int added = 0;
+	for ( int i = 0; i < total; i += stride )
+	{
+		const Cell &c = cells[ i ];
+
+		// The marker sits at the wall base (dropped to the map floor, at the
+		// cell's centre X/Z) and points up the wall's top. The proximity test
+		// only reads the start, so a bot detects it is "at a wall"; the end is
+		// where a future route-to-wall could aim.
+		const float px = c.gx * grid + 0.5f * grid;
+		const float pz = c.gz * grid + 0.5f * grid;
+
+		WallConnection con;
+		con.start[ 0 ] = px;
+		con.start[ 1 ] = floorY;
+		con.start[ 2 ] = pz;
+		con.end[ 0 ] = px;
+		con.end[ 1 ] = c.maxY;
+		con.end[ 2 ] = pz;
+		t.wallConnections.push_back( con );
+		++added;
+	}
+
+	if ( added > 0 )
+	{
+		t.context.RunOnMainThread( [added, total] {
+			LOG.Notice( "Wallwalk: %d wall cell(s) clustered into %d off-mesh connection marker(s)", total, added );
+		} );
+	}
 }
 
 // May be called from a worker thread, thus must not use trap calls.
@@ -1133,6 +1374,14 @@ bool NavmeshGenerator::Step( NavgenTask &t )
 {
 	if ( t.status.code != NavgenStatus::OK || t.y >= t.th || t.tw == 0 )
 	{
+		// Add the wall/ceiling layers after all ground tiles so that, should the
+		// shared tile cache ever overflow, the ground navigation mesh keeps
+		// priority. No-op unless wallwalk was requested via navcfg.
+		if ( IsWallwalkSupported() && !t.wallLayersGenerated )
+		{
+			GenerateWallLayers( t );
+			t.wallLayersGenerated = true;
+		}
 		t.context.RunOnMainThread( [this, &t] { WriteFile( t ); } );
 		return true;
 	}

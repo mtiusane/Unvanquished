@@ -179,6 +179,19 @@ static void ParseOption( Str::StringRef name, Str::StringRef value, Str::StringR
 			return;
 		}
 	}
+	else if ( Str::IsIEqual( name, "wallwalk" ) || Str::IsIEqual( name, "wallwalkOrientations" ) )
+	{
+		// Bitmask of navPolyOrientations (NAV_WALL_XPOS=1, NAV_WALL_XNEG=2,
+		// NAV_WALL_YPOS=4, NAV_WALL_YNEG=8). Any non-zero value enables the
+		// generation of wall/ceiling navmesh layers tagged POLYFLAGS_WALLWALK.
+		// The default (NavgenConfig::Default) is non-zero, so this pass runs
+		// out of the box; set it to 0 to leave the standard navmesh untouched.
+		if ( boolValue >= 0 )
+		{
+			config.wallwalkOrientationMask = boolValue;
+			return;
+		}
+	}
 	else
 	{
 		Log::Warn( "%s: unknown navgen setting '%s'", file, name );
