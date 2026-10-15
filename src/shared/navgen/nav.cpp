@@ -1283,10 +1283,18 @@ void NavmeshGenerator::GenerateWallLayers( NavgenTask &t )
 			continue; // degenerate triangle
 		}
 
+		// In this Recast frame nx is the quake X component, ny the up (quake Z)
+		// component, and nz the quake Y component. So the four vertical wall
+		// directions are nx (+/-X quake) and nz (+/-Y quake); ny selects upward
+		// (floor, YPOS) / downward (ceiling, YNEG) facing surfaces.
 		bool onAxis = false;
 		if ( mask & navPolyOrientations::NAV_WALL_XPOS && nx > 0.f && nx * nx > 0.25f * n2 )
 			onAxis = true;
 		else if ( mask & navPolyOrientations::NAV_WALL_XNEG && nx < 0.f && nx * nx > 0.25f * n2 )
+			onAxis = true;
+		else if ( mask & navPolyOrientations::NAV_WALL_ZPOS && nz > 0.f && nz * nz > 0.25f * n2 )
+			onAxis = true;
+		else if ( mask & navPolyOrientations::NAV_WALL_ZNEG && nz < 0.f && nz * nz > 0.25f * n2 )
 			onAxis = true;
 		else if ( mask & navPolyOrientations::NAV_WALL_YPOS && ny > 0.f && ny * ny > 0.25f * n2 )
 			onAxis = true;

@@ -265,22 +265,31 @@ bool G_BotNextCornerIsWallwalk( int botClientNum )
 	return ( flags & navPolyFlags::POLYFLAGS_WALLWALK ) != 0;
 }
 
-// Finds the base-of-wall off-mesh connection (tagged POLYFLAGS_WALLWALK) closest to
-// the bot and reports it, so a wallwalk-capable class knows where the nearest
-// climbable wall is even when it is not yet standing at a wall base.
+// Finds the base-of-wall off-mesh connection (tagged POLYFLAGS_WALLWALK) that best
+// lets a wallwalk-capable class reach `targetPos` even when it is not yet standing at a
+// wall base, and reports it.
 //
-// Returns true and sets `markerPos` to the connection's start (the wall base, at the
-// map floor) and `markerDist` to the horizontal distance from `ownPos` to it, when at
-// least one such connection exists. Returns false when there are none, which means
-// climbing is impossible for this bot and the caller should fall back to ordinary
-// upward (jumping) movement.
+// The selection prefers a wall that is *on the way* to the target rather than the
+// globally nearest one: each marker is scored by the extra horizontal distance it adds
+// relative to heading straight for the target -- |bot->marker| minus the projection of
+// bot->marker onto bot->target. A marker on the direct path scores ~0; a wall behind or
+// beside the bot scores higher and loses, so the bot stops climbing the wrong wall and
+// walking around. When the target is directly above the bot (no horizontal direction) this
+// degenerates to plain nearest.
 //
-// `ownPos` and `markerPos` are both in the quake coordinate system (Z up), which is
-// what the caller (BotWallwalkClimbTowardGoal) expects. The stored marker coordinates
-// are in the recast frame (Y up), so the start is converted with ToQuake() before being
-// handed back. Only the bridge connections emitted for wallwalk-capable classes carry
-// POLYFLAGS_WALLWALK, so this never matches hand-authored navcons.
-bool G_BotNearestWallConnection( int botClientNum, const glm::vec3 &ownPos, glm::vec3 &markerPos, float &markerDist )
+// Returns true and sets `markerPos` to the connection's start (the wall base, at the map
+// floor) and `markerDist` to the horizontal distance from `ownPos` to that selected
+// marker, when at least one such connection exists. Returns false when there are none,
+// which means climbing is impossible for this bot and the caller should fall back to
+// ordinary upward (jumping) movement.
+//
+// `ownPos`, `targetPos` and `markerPos` are all in the quake coordinate system (Z up),
+// which is what the callers (BotWallwalkClimbTowardGoal / BotWallwalkBuildTowardGoal)
+// expect. The stored marker coordinates are in the recast frame (Y up), so the start is
+// converted with ToQuake() before being handed back. Only the bridge connections emitted
+// for wallwalk-capable classes carry POLYFLAGS_WALLWALK, so this never matches
+// hand-authored navcons.
+bool G_BotNearestWallConnection( int botClientNum, const glm::vec3 &ownPos, const glm::vec3 &targetPos, glm::vec3 &markerPos, float &markerDist )
 {
 	Bot_t *bot = &agents[ botClientNum ];
 	if ( !bot->nav )
@@ -294,9 +303,18 @@ bool G_BotNearestWallConnection( int botClientNum, const glm::vec3 &ownPos, glm:
 		return false;
 	}
 
+	// Convert to the recast frame (Y up), which is how the marker coordinates are stored,
+	// so the horizontal (recast x/z = quake x/y) comparison is direct.
 	rVec spos( ownPos );
+	rVec tpos( targetPos );
+	// Horizontal direction from the bot to the target (recast x/z = quake x/y).
+	const float tdx = tpos[ 0 ] - spos[ 0 ];
+	const float tdz = tpos[ 2 ] - spos[ 2 ];
+	const float tlen2 = tdx * tdx + tdz * tdz;
+
 	bool found = false;
-	float bestDistSq = 1e18f;
+	float bestCost = 1e18f;
+	float bestDistSq = 0.f;
 	for ( int i = 0; i < con.offMeshConCount; ++i )
 	{
 		if ( ( con.flags[ i ] & navPolyFlags::POLYFLAGS_WALLWALK ) == 0 )
@@ -304,16 +322,35 @@ bool G_BotNearestWallConnection( int botClientNum, const glm::vec3 &ownPos, glm:
 			continue; // only generated wall/ceiling bridge connections
 		}
 
-		rVec start = rVec::Load( &con.verts[ i * 6 + 0 ] );
 		// The marker start and spos are both in the recast frame (Y up), so the
 		// horizontal separation (recast x/z, which is quake x/y) is compared directly.
 		// A bot at the base of a tall wall still matches because only the horizontal
 		// distance is used.
+		rVec start = rVec::Load( &con.verts[ i * 6 + 0 ] );
 		const float dx = start[ 0 ] - spos[ 0 ];
 		const float dz = start[ 2 ] - spos[ 2 ];
 		const float d2 = dx * dx + dz * dz;
-		if ( d2 < bestDistSq )
+
+		// Score by the extra distance the marker adds relative to heading straight for the
+		// target: |bot->marker| minus its projection onto the target direction. A marker on
+		// the direct path has projection ~= its distance, so cost ~= 0; a wall behind or
+		// beside the bot has smaller (or negative) projection and a higher cost, so it
+		// loses. When the target is directly above the bot (no horizontal direction) this
+		// degenerates to plain nearest by distance.
+		float cost;
+		if ( tlen2 < 1e-6f )
 		{
+			cost = d2;
+		}
+		else
+		{
+			const float proj = ( dx * tdx + dz * tdz ) / std::sqrt( tlen2 );
+			cost = std::sqrt( d2 ) - proj;
+		}
+
+		if ( cost < bestCost )
+		{
+			bestCost = cost;
 			bestDistSq = d2;
 			found = true;
 			// Hand the caller a quake-space (Z up) position: the stored start is in the
@@ -328,6 +365,8 @@ bool G_BotNearestWallConnection( int botClientNum, const glm::vec3 &ownPos, glm:
 		return false;
 	}
 
+	// `markerDist` keeps its original meaning -- the horizontal distance from the bot to
+	// the selected marker -- so the caller's range checks (climb/seek ranges) still hold.
 	markerDist = std::sqrt( bestDistSq );
 	return true;
 }

@@ -46,9 +46,13 @@ ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 #include "fastlz/fastlz.h"
 
 static const int NAVMESHSET_MAGIC = 'M'<<24 | 'S'<<16 | 'E'<<8 | 'T'; //'MSET';
-static const int NAVMESHSET_VERSION = 13; // Increment when navgen algorithm or data format changes
+static const int NAVMESHSET_VERSION = 14; // Increment when navgen algorithm or data format changes
 // 13: wallwalk markers are now emitted on a much finer (128-unit) grid and the
 // per-mesh marker cap was raised, so cached meshes must be regenerated.
+// 14: wallwalk markers are now emitted for the quake +Y/-Y vertical walls too
+// (recast +Z/-Z normals, NAV_WALL_ZPOS/NAV_WALL_ZNEG); previously only quake X
+// walls and ceilings got markers, so roughly half of all vertical walls had no
+// climb marker and bots could not reach a target beside them.
 
 enum navPolyFlags
 {
@@ -59,13 +63,19 @@ enum navPolyFlags
 	POLYFLAGS_ALL       = 0xffff, // All abilities.
 };
 
-// Orientation bitmask for wallwalking layers
+// Orientation bitmask for wallwalking layers.
+//
+// The names are in the Recast frame (rVec convention: recast Y is the UP axis,
+// i.e. quake Z; recast X/Z map onto quake X/Y). A triangle counts toward a layer
+// when its surface normal points roughly along the matching axis.
 enum navPolyOrientations
 {
-	NAV_WALL_XPOS = 1,		// +X wall (facing in +X direction)
-	NAV_WALL_XNEG = 2,		// -X wall (facing in -X direction)
-	NAV_WALL_YPOS = 4,		// +Y wall (facing in +Y direction) 
-	NAV_WALL_YNEG = 8,		// -Y wall (facing in -Y direction)
+	NAV_WALL_XPOS = 1,		// recast +X normal = +X quake vertical wall
+	NAV_WALL_XNEG = 2,		// recast -X normal = -X quake vertical wall
+	NAV_WALL_YPOS = 4,		// recast +Y normal = upward facing surface (a floor)
+	NAV_WALL_YNEG = 8,		// recast -Y normal = downward facing surface (a ceiling)
+	NAV_WALL_ZPOS = 16,		// recast +Z normal = +Y quake vertical wall
+	NAV_WALL_ZNEG = 32,		// recast -Z normal = -Y quake vertical wall
 };
 
 enum navPolyAreas
@@ -87,14 +97,14 @@ struct NavgenConfig {
 	float walkableRadiusFactor;
 
 	navPolyFlags polyFlags; // bitmask of supported navigation abilities (e.g., wallwalking, jetpack)
-	int wallwalkOrientationMask; // bitfield: NAV_WALL_XPOS=1, NAV_WALL_XNEG=2, NAV_WALL_YPOS=4, NAV_WALL_YNEG=8
+	int wallwalkOrientationMask; // bitfield: NAV_WALL_XPOS=1, NAV_WALL_XNEG=2, NAV_WALL_YPOS=4, NAV_WALL_YNEG=8, NAV_WALL_ZPOS=16, NAV_WALL_ZNEG=32
 
 	// wallwalkOrientationMask defaults to the wall/ceiling orientations so that the
 	// automatic navmesh generation (run when a navmesh file is missing) produces
 	// wall/ceiling layers and bridge connections out of the box, without needing a
 	// per-map navcfg. Non-wallwalk classes skip the whole pass (see
 	// GenerateWallLayers), so their meshes are unaffected. Set to 0 to disable.
-	static NavgenConfig Default() { return { 2.0f, STEPSIZE, 1, 1, 1, 1, 0.5f, false, 0.25f, 1.0f, POLYFLAGS_WALK, NAV_WALL_XPOS | NAV_WALL_XNEG | NAV_WALL_YNEG }; }
+	static NavgenConfig Default() { return { 2.0f, STEPSIZE, 1, 1, 1, 1, 0.5f, false, 0.25f, 1.0f, POLYFLAGS_WALK, NAV_WALL_XPOS | NAV_WALL_XNEG | NAV_WALL_ZPOS | NAV_WALL_ZNEG | NAV_WALL_YNEG }; }
 };
 
 struct NavgenMapIdentification

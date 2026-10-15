@@ -518,26 +518,43 @@ void BotStandStill( gentity_t *self )
 }
 
 // Wallwalk-capable classes (dretch, mantis, advanced granger) "bite" on a wall to
-// climb to a target above them. A jump or pounce issued mid-climb pops the bot off
-// the wall, so for g_bot_wallwalkClimbHoldTime milliseconds after a climb is issued
-// we suppress jumps/pounces and keep the bite alive. Declared here (before BotJump)
-// because BotJump needs the hold window; the sibling wallwalk cvars live further down.
+// climb to a target above them. A jump or pounce issued while the bot is on the wall
+// pops it off, so BotIsWallClimbing (below) suppresses jumps/pounces for as long as the
+// bot is biting: both while it is physically attached (EF_WALLCLIMB/EF_WALLCLIMBCEILING,
+// set by the engine) and for g_bot_wallwalkClimbHoldTime milliseconds after a climb is
+// issued (before the attach takes hold). Declared here (before BotJump) because BotJump
+// needs it; the sibling wallwalk cvars live further down.
 static Cvar::Cvar<int> g_bot_wallwalkClimbHoldTime(
 	"g_bot_wallwalkClimbHoldTime", "how long (ms) after issuing a wall climb a wallwalk-capable bot keeps biting instead of jumping/pouncing, so it doesn't pop off the wall", Cvar::NONE, 500 );
 
-// True when a wallwalk-capable bot recently issued a wall climb and is therefore
-// still biting on the wall. During this window jumps/pounces are suppressed and the
-// climb is kept alive, so the bot finishes reaching the target instead of whiffing.
+// True when a wallwalk-capable bot is biting on a wall/ceiling, so jumps/pounces are
+// suppressed and the climb is kept alive. This covers two cases: the bot is physically
+// attached to a surface (the engine sets EF_WALLCLIMB/EF_WALLCLIMBCEILING in
+// PM_GroundClimbTrace), or it issued a climb within the g_bot_wallwalkClimbHoldTime hold
+// window (the attach has not taken hold yet). While true the bot finishes reaching the
+// target instead of being popped off -- as a human wallwalker does.
 static bool BotIsWallClimbing( gentity_t *self )
 {
-	return BG_ClassHasAbility( self->client->ps.stats[ STAT_CLASS ], SCA_WALLCLIMBER )
-		&& level.time - self->botMind->lastWallClimbTime < g_bot_wallwalkClimbHoldTime.Get();
+	if ( !BG_ClassHasAbility( self->client->ps.stats[ STAT_CLASS ], SCA_WALLCLIMBER ) )
+	{
+		return false;
+	}
+	// While physically attached to a wall/ceiling the bot must not jump or pounce, or it
+	// pops off the surface and whiffs the enemy above it. This holds for the whole climb,
+	// independent of the (possibly already-expired) hold window below.
+	if ( self->client->ps.eFlags & ( EF_WALLCLIMB | EF_WALLCLIMBCEILING ) )
+	{
+		return true;
+	}
+	// A climb was just issued (within the hold window): keep biting so the attach takes
+	// hold instead of being popped off by a jump.
+	return level.time - self->botMind->lastWallClimbTime < g_bot_wallwalkClimbHoldTime.Get();
 }
 
 bool BotJump( gentity_t *self )
 {
-	// Don't pop a bot off a wall it is currently biting: suppress jumps while the
-	// wallwalk hold window is active.
+	// Don't pop a bot off a wall/ceiling it is currently biting: suppress jumps/pounces
+	// while the bot is attached to the surface or within the climb hold window.
 	if ( BotIsWallClimbing( self ) )
 	{
 		return false;
@@ -1117,11 +1134,12 @@ bool BotWallwalkClimbTowardGoal( gentity_t *self )
 		return false;
 	}
 
-	// Locate the nearest base-of-wall marker. There may be none in this mesh, in
-	// which case climbing is impossible and we fall back to jumping.
+	// Locate the wall whose base best reaches the target: prefer one on the way to it
+	// over the globally nearest. There may be none in this mesh, in which case climbing
+	// is impossible and we fall back to jumping.
 	glm::vec3 markerPos;
 	float markerDist = 0.f;
-	const bool hasWall = G_BotNearestWallConnection( self->s.number, ownPos, markerPos, markerDist );
+	const bool hasWall = G_BotNearestWallConnection( self->s.number, ownPos, targetPos, markerPos, markerDist );
 
 	// Throttled diagnostics so the climb path can be observed without a rebuild.
 	static int s_nextLog = 0;
@@ -1208,11 +1226,12 @@ bool BotWallwalkBuildTowardGoal( gentity_t *self )
 		return false;
 	}
 
-	// Locate the nearest base-of-wall marker so we can climb from it. There may be
-	// none in this mesh, in which case there is nothing to climb onto.
+	// Locate the wall whose base best reaches the goal: prefer one on the way to it over
+	// the globally nearest. There may be none in this mesh, in which case there is nothing
+	// to climb onto.
 	glm::vec3 markerPos;
 	float markerDist = 0.f;
-	const bool hasWall = G_BotNearestWallConnection( self->s.number, ownPos, markerPos, markerDist );
+	const bool hasWall = G_BotNearestWallConnection( self->s.number, ownPos, targetPos, markerPos, markerDist );
 	if ( !hasWall )
 	{
 		// No wall in this mesh to climb: walk horizontally toward the goal's base and

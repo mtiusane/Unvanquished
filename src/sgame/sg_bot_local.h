@@ -237,11 +237,12 @@ bool G_IsBotOverNavcon( int botClientNum );
 // True when the bot's next path corner lies on a wall/ceiling polygon
 // (tagged POLYFLAGS_WALLWALK), so a wallwalk-capable class can climb onto it.
 bool G_BotNextCornerIsWallwalk( int botClientNum );
-// Finds the base-of-wall off-mesh connection (POLYFLAGS_WALLWALK) closest to the
-// bot: returns true and sets `markerPos`/`markerDist` to the nearest one when any
-// exist, else false (climbing impossible). Lets a wallwalk-capable class walk to a
-// wall base even when it isn't standing at one yet.
-bool G_BotNearestWallConnection( int botClientNum, const glm::vec3 &ownPos, glm::vec3 &markerPos, float &markerDist );
+// Finds the base-of-wall off-mesh connection (POLYFLAGS_WALLWALK) that best lets a
+// wallwalk-capable class reach `targetPos`, preferring a wall on the way to the target
+// over the globally nearest one: returns true and sets `markerPos`/`markerDist` to it
+// when any exist, else false (climbing impossible). Lets a wallwalk-capable class walk to
+// a wall base even when it isn't standing at one yet.
+bool G_BotNearestWallConnection( int botClientNum, const glm::vec3 &ownPos, const glm::vec3 &targetPos, glm::vec3 &markerPos, float &markerDist );
 // As G_BotNearestWallConnection but returns the TOP (end) of the nearest
 // wall/ceiling marker to `refPos`, so a wallwalk-capable builder can target an
 // elevated build spot; `dist` is the horizontal distance to that marker's base.
