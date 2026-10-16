@@ -1245,21 +1245,29 @@ void NavmeshGenerator::GenerateWallLayers( NavgenTask &t )
 	// (a component exceeds half the normal's length, i.e. steeper than 60 deg
 	// from that axis) rejects diagonal surfaces and avoids a sqrt.
 	const int mask = config_.wallwalkOrientationMask;
-	const float floorY = geo_.getMins()[ 1 ];
 	// Marker grid spacing in quake units. A finer grid places a base-of-wall
 	// marker closer to any point on a wall so a wallwalk-capable bot standing
 	// anywhere at a wall base finds one within g_bot_wallwalkClimbRange. The cap
 	// (MAX_WALL_CON) is the only reason the grid can't go arbitrarily fine: a large
 	// map with more cells than the budget has the surplus sampled out (below).
-	const float grid = 128.f;
+	const float grid = 64.f;
 
 	// Cluster on-axis wall triangles into world XZ grid cells so the connection
 	// markers are spread across the whole map. The previous code stride-sampled
 	// the raw triangle list, which scattered (and often clustered) the markers and
 	// left large stretches of wall uncovered, so a bot standing at a wall base
 	// could find no nearby marker and never climb. Each non-empty cell contributes
-	// at most one marker at that wall's base.
-	struct WallCluster { float minY, maxY; };
+	// at most one marker.
+	//
+	// The marker is placed ON the wall -- at the centroid XZ of the cell's on-axis
+	// triangles -- not at the cell centre, because the climb-attach trace in
+	// PM_GroundClimbTrace looks only a fraction of a unit into the move direction
+	// (GCT_ATP_MOVEDIRECTION), so a bot must be physically against the wall face
+	// for it to bite. A cell-centre marker sits up to half a grid away from the
+	// wall, so a bot that walked to it was never close enough to climb and just
+	// spun in place. The base Y is the wall's own lowest triangle (minY), not the
+	// map floor, so an elevated wall's marker reflects its real base.
+	struct WallCluster { float minY, maxY, cx, cz, count; };
 	std::unordered_map< std::uint64_t, WallCluster > clusters;
 
 	for ( int ti = 0; ti < worldMesh->ntris; ++ti )
@@ -1321,13 +1329,17 @@ void NavmeshGenerator::GenerateWallLayers( NavgenTask &t )
 		auto it = clusters.find( key );
 		if ( it == clusters.end() )
 		{
-			clusters.emplace( key, WallCluster{ py, py } );
+			clusters.emplace( key, WallCluster{ py, py, px, pz, 1.f } );
 		}
 		else
 		{
 			WallCluster &c = it->second;
 			if ( py < c.minY ) c.minY = py;
 			if ( py > c.maxY ) c.maxY = py;
+			// Accumulate the centroid XZ so the marker lands on the wall face.
+			c.cx += px;
+			c.cz += pz;
+			c.count += 1.f;
 		}
 	}
 
@@ -1335,7 +1347,7 @@ void NavmeshGenerator::GenerateWallLayers( NavgenTask &t )
 	// grid when there are more cells than the budget (the mesh's off-mesh-
 	// connection storage cap, OffMeshConnections::MAX_CON) so the markers stay
 	// spread over the map instead of clustering in the early cells.
-	struct Cell { int gx, gz; float minY, maxY; };
+	struct Cell { int gx, gz; float minY, maxY, cx, cz; };
 	std::vector< Cell > cells;
 	cells.reserve( clusters.size() );
 	for ( auto &kv : clusters )
@@ -1345,6 +1357,9 @@ void NavmeshGenerator::GenerateWallLayers( NavgenTask &t )
 		c.gz = static_cast<int32_t>( kv.first & 0xffffffffu );
 		c.minY = kv.second.minY;
 		c.maxY = kv.second.maxY;
+		// Average the accumulated centroid XZ back down to the wall's mean position.
+		c.cx = kv.second.cx / kv.second.count;
+		c.cz = kv.second.cz / kv.second.count;
 		cells.push_back( c );
 	}
 	std::sort( cells.begin(), cells.end(), []( const Cell &a, const Cell &b ) {
@@ -1363,16 +1378,18 @@ void NavmeshGenerator::GenerateWallLayers( NavgenTask &t )
 	{
 		const Cell &c = cells[ i ];
 
-		// The marker sits at the wall base (dropped to the map floor, at the
-		// cell's centre X/Z) and points up the wall's top. The proximity test
-		// only reads the start, so a bot detects it is "at a wall"; the end is
-		// where a future route-to-wall could aim.
-		const float px = c.gx * grid + 0.5f * grid;
-		const float pz = c.gz * grid + 0.5f * grid;
+		// The marker sits on the wall face (the cell's on-axis triangle centroid
+		// XZ, dropped to the wall's own base minY) and points up the wall's top
+		// (maxY). The proximity test reads the start, so a bot detects it is "at a
+		// wall" and bites it; because the start is on the face, walking to it puts
+		// the bot against the wall so the short climb-attach trace can bite. The end
+		// is where a future route-to-wall could aim.
+		const float px = c.cx;
+		const float pz = c.cz;
 
 		WallConnection con;
 		con.start[ 0 ] = px;
-		con.start[ 1 ] = floorY;
+		con.start[ 1 ] = c.minY;
 		con.start[ 2 ] = pz;
 		con.end[ 0 ] = px;
 		con.end[ 1 ] = c.maxY;

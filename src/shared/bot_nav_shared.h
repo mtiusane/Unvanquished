@@ -46,13 +46,19 @@ ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 #include "fastlz/fastlz.h"
 
 static const int NAVMESHSET_MAGIC = 'M'<<24 | 'S'<<16 | 'E'<<8 | 'T'; //'MSET';
-static const int NAVMESHSET_VERSION = 14; // Increment when navgen algorithm or data format changes
+static const int NAVMESHSET_VERSION = 15; // Increment when navgen algorithm or data format changes
 // 13: wallwalk markers are now emitted on a much finer (128-unit) grid and the
 // per-mesh marker cap was raised, so cached meshes must be regenerated.
 // 14: wallwalk markers are now emitted for the quake +Y/-Y vertical walls too
 // (recast +Z/-Z normals, NAV_WALL_ZPOS/NAV_WALL_ZNEG); previously only quake X
 // walls and ceilings got markers, so roughly half of all vertical walls had no
 // climb marker and bots could not reach a target beside them.
+// 15: wallwalk markers are now placed ON the wall face (the cell's on-axis
+// triangle centroid XZ, dropped to the wall's own base height) instead of at the
+// grid cell centre on the map floor, and on a finer 64-unit grid. A bot must be
+// physically against the wall for the short climb-attach trace to bite, so a
+// cell-centre marker left the bot too far to ever climb; cached meshes must be
+// regenerated.
 
 enum navPolyFlags
 {

@@ -238,11 +238,17 @@ bool G_IsBotOverNavcon( int botClientNum );
 // (tagged POLYFLAGS_WALLWALK), so a wallwalk-capable class can climb onto it.
 bool G_BotNextCornerIsWallwalk( int botClientNum );
 // Finds the base-of-wall off-mesh connection (POLYFLAGS_WALLWALK) that best lets a
-// wallwalk-capable class reach `targetPos`, preferring a wall on the way to the target
-// over the globally nearest one: returns true and sets `markerPos`/`markerDist` to it
-// when any exist, else false (climbing impossible). Lets a wallwalk-capable class walk to
-// a wall base even when it isn't standing at one yet.
-bool G_BotNearestWallConnection( int botClientNum, const glm::vec3 &ownPos, const glm::vec3 &targetPos, glm::vec3 &markerPos, float &markerDist );
+// wallwalk-capable class reach `targetPos`. When the target is meaningfully above the
+// bot, the genuinely nearest wall (by horizontal distance) is preferred over a wall that
+// merely lies on the line to the target: an elevated target is reached by getting up on
+// any nearby wall and re-evaluating, whereas the on-the-way cost can select a far wall and
+// push the reported distance beyond the seek range, making the bot stand under the target
+// instead of climbing a wall that is actually close. When the target is level with the bot
+// a wall on the way to it is preferred over the globally nearest one. Returns true and sets
+// `markerPos`/`markerDist` to the chosen marker when any exist, else false (climbing
+// impossible). `wallCount` is set to the number of POLYFLAGS_WALLWALK markers in the mesh
+// (0 when the mesh has none), regardless of the return value.
+bool G_BotNearestWallConnection( int botClientNum, const glm::vec3 &ownPos, const glm::vec3 &targetPos, glm::vec3 &markerPos, float &markerDist, int &wallCount );
 // As G_BotNearestWallConnection but returns the TOP (end) of the nearest
 // wall/ceiling marker to `refPos`, so a wallwalk-capable builder can target an
 // elevated build spot; `dist` is the horizontal distance to that marker's base.

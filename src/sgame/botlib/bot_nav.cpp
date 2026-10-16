@@ -289,17 +289,19 @@ bool G_BotNextCornerIsWallwalk( int botClientNum )
 // converted with ToQuake() before being handed back. Only the bridge connections emitted
 // for wallwalk-capable classes carry POLYFLAGS_WALLWALK, so this never matches
 // hand-authored navcons.
-bool G_BotNearestWallConnection( int botClientNum, const glm::vec3 &ownPos, const glm::vec3 &targetPos, glm::vec3 &markerPos, float &markerDist )
+bool G_BotNearestWallConnection( int botClientNum, const glm::vec3 &ownPos, const glm::vec3 &targetPos, glm::vec3 &markerPos, float &markerDist, int &wallCount )
 {
 	Bot_t *bot = &agents[ botClientNum ];
 	if ( !bot->nav )
 	{
+		wallCount = 0;
 		return false;
 	}
 
 	const OffMeshConnections &con = bot->nav->process.con;
 	if ( con.offMeshConCount == 0 )
 	{
+		wallCount = 0;
 		return false;
 	}
 
@@ -312,15 +314,28 @@ bool G_BotNearestWallConnection( int botClientNum, const glm::vec3 &ownPos, cons
 	const float tdz = tpos[ 2 ] - spos[ 2 ];
 	const float tlen2 = tdx * tdx + tdz * tdz;
 
+	// When the target sits meaningfully above the bot, committing to the genuinely nearest
+	// wall (by horizontal distance) is the right choice: an elevated target is reached by
+	// getting up on any nearby wall and re-evaluating from its top. The on-the-way detour
+	// cost below instead rewards a wall that lies on the line to the target, which for an
+	// offset-elevated target can be a far wall -- the reported distance then exceeds the
+	// seek range and the bot falls back to standing under the target, even when a climbable
+	// wall is actually close. The height test is in the quake frame (Z up), where both
+	// positions arrive.
+	const bool targetIsAbove = targetPos.z - ownPos.z > 64.f;
+
 	bool found = false;
 	float bestCost = 1e18f;
 	float bestDistSq = 0.f;
+	wallCount = 0;
 	for ( int i = 0; i < con.offMeshConCount; ++i )
 	{
 		if ( ( con.flags[ i ] & navPolyFlags::POLYFLAGS_WALLWALK ) == 0 )
 		{
 			continue; // only generated wall/ceiling bridge connections
 		}
+
+		++wallCount;
 
 		// The marker start and spos are both in the recast frame (Y up), so the
 		// horizontal separation (recast x/z, which is quake x/y) is compared directly.
@@ -331,14 +346,15 @@ bool G_BotNearestWallConnection( int botClientNum, const glm::vec3 &ownPos, cons
 		const float dz = start[ 2 ] - spos[ 2 ];
 		const float d2 = dx * dx + dz * dz;
 
-		// Score by the extra distance the marker adds relative to heading straight for the
-		// target: |bot->marker| minus its projection onto the target direction. A marker on
-		// the direct path has projection ~= its distance, so cost ~= 0; a wall behind or
-		// beside the bot has smaller (or negative) projection and a higher cost, so it
-		// loses. When the target is directly above the bot (no horizontal direction) this
-		// degenerates to plain nearest by distance.
+		// For an elevated target (or one directly overhead, with no horizontal direction)
+		// score by pure horizontal distance so the bot commits to the nearest climbable
+		// wall. Otherwise score by the extra distance the marker adds relative to heading
+		// straight for the target: |bot->marker| minus its projection onto the target
+		// direction. A marker on the direct path has projection ~= its distance, so cost
+		// ~= 0; a wall behind or beside the bot has smaller (or negative) projection and a
+		// higher cost, so it loses.
 		float cost;
-		if ( tlen2 < 1e-6f )
+		if ( targetIsAbove || tlen2 < 1e-6f )
 		{
 			cost = d2;
 		}
