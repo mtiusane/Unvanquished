@@ -992,6 +992,8 @@ static Cvar::Cvar<float> g_bot_wallwalkSeekRange(
 	"g_bot_wallwalkSeekRange", "how far a wallwalk-capable bot will walk toward a climb point (nearest wall base, or the target's own XZ when that is the best route) to reach a target above it; 0 disables this and falls back to jumping", Cvar::NONE, 2048 );
 static Cvar::Cvar<float> g_bot_wallwalkDetectRange(
 	"g_bot_wallwalkDetectRange", "horizontal radius within which a wallwalk-capable bot detects a wall it is physically against and bites it directly, even when no generated marker is that close; 0 disables the direct detect", Cvar::NONE, 64.f );
+static Cvar::Cvar<float> g_bot_wallwalkHeightReach(
+	"g_bot_wallwalkHeightReach", "when reaching for a target above the bot, how strongly a wallwalk-capable bot prefers a wall whose top reaches the target over a nearer but shorter one (squared height-shortfall weight; 0 = plain nearest wall)", Cvar::NONE, 4.f );
 static Cvar::Cvar<bool> g_bot_wallwalkDebug(
 	"g_bot_wallwalkDebug", "log wallwalk climb-trigger diagnostics for wallwalk-capable bots (throttled)", Cvar::NONE, false );
 
@@ -1324,15 +1326,68 @@ bool BotWallwalkClimbTowardGoal( gentity_t *self )
 		return true;
 	}
 
-	// Locate the wall whose base best reaches the target: when the target is above the
-	// bot the genuinely nearest wall (by horizontal distance) is preferred over one
-	// merely on the way to it (see G_BotNearestWallConnection). There may be none in
-	// this mesh, in which case climbing is impossible and we fall back to the ordinary
-	// upward movement below.
+	// Height gates first, before any wall search or bite, so a bot that has climbed above
+	// its target (an overshoot, or one stuck on a wall/ceiling above it) stops re-biting
+	// and instead drops off. A target that is *below* us is not a climb: a wallwalker that
+	// has overshot should walk back toward the target's XZ and let gravity drop it off, then
+	// re-evaluate from the ground. We only do this when the bot is actually attached to a
+	// surface (EF_WALLCLIMB/EF_WALLCLIMBCEILING) so ordinary ground combat -- a target a few
+	// units below on the same floor -- is left to the normal movement path; when the bot is
+	// not attached we fall through to ordinary combat rather than climbing. We do NOT bite
+	// here (that keeps the bot on the surface): we walk horizontally with upmove cleared,
+	// letting the climb-attach trace miss and gravity bring the bot down. This is the fix
+	// for a bot that climbs a wall and then sits above its target doing nothing, and for the
+	// "swarms directly under a platform with walls at its ends" case: with the target above
+	// us we instead fall through to the wall search below and detour to a nearby wall.
+	if ( heightDiff < 0.f )
+	{
+		if ( self->client->ps.eFlags & ( EF_WALLCLIMB | EF_WALLCLIMBCEILING ) )
+		{
+			glm::vec3 toTarget = targetPos - ownPos;
+			toTarget.z = 0.f;
+			const float targetDist = glm::length( toTarget );
+			if ( targetDist > 1.f && ( seekRange <= 0.f || targetDist <= seekRange ) )
+			{
+				if ( wantDebug && level.time >= s_nextLog )
+				{
+					s_nextLog = level.time + 1000;
+					Log::Notice( "Wallwalk: client %d (%s) target %.0f below self, walking to its XZ to drop off",
+						self->s.number, BG_Class( classNum )->name, heightDiff );
+				}
+				BotSeek( self, toTarget );
+				self->botMind->cmdBuffer.upmove = 0;
+				return true;
+			}
+		}
+		return false;
+	}
+
+	// The target is above us but within the jump apex (a positive gap smaller than
+	// climbMin): a jump/pounce reaches it, so leave it to the ordinary upward movement
+	// below and don't climb.
+	if ( heightDiff < climbMin )
+	{
+		if ( wantDebug && level.time >= s_nextLog )
+		{
+			s_nextLog = level.time + 1000;
+			Log::Notice( "Wallwalk: client %d (%s) target only %.0f above (self z %.0f, target z %.0f), below min height %.0f -> not climbing",
+				self->s.number, BG_Class( classNum )->name, heightDiff, ownPos.z, targetPos.z, climbMin );
+		}
+		return false;
+	}
+
+	// Locate the wall whose base best reaches the target: when the target is above the bot
+	// the genuinely nearest wall (by horizontal distance) is preferred over one merely on
+	// the way to it, with a squared penalty for how far that wall's top falls short of the
+	// target (g_bot_wallwalkHeightReach) so a nearer wall that actually reaches the target
+	// wins over a far tall one, and a short wall is only chosen when it is close enough
+	// (see G_BotNearestWallConnection). There may be none in this mesh, in which case
+	// climbing is impossible and we fall back to the ordinary upward movement below.
 	glm::vec3 markerPos;
 	float markerDist = 0.f;
 	int wallCount = 0;
-	const bool hasWall = G_BotNearestWallConnection( self->s.number, ownPos, targetPos, markerPos, markerDist, wallCount );
+	float markerTopZ = 0.f;
+	const bool hasWall = G_BotNearestWallConnection( self->s.number, ownPos, targetPos, markerPos, markerDist, wallCount, markerTopZ, g_bot_wallwalkHeightReach.Get() );
 
 	// Primary trigger: when the bot has reached the base of a generated wall (within the
 	// detect range of its base marker), bite it directly and let the engine's
@@ -1378,48 +1433,6 @@ bool BotWallwalkClimbTowardGoal( gentity_t *self )
 		}
 	}
 
-	// Not at a wall base yet. A target that is *below* us is not a climb: a wallwalker
-	// that has overshot (climbed past the target) or is stuck attached to a wall/ceiling
-	// above it should instead walk back toward the target's XZ and drop off, then
-	// re-evaluate from the ground. This fixes a bot that climbs a wall and then sits above
-	// its target doing nothing. We only act when the bot is actually attached to a surface
-	// (EF_WALLCLIMB/EF_WALLCLIMBCEILING) so ordinary ground combat -- a target a few units
-	// below on the same floor -- is left to the normal movement path. We do NOT bite here
-	// (that keeps the bot on the surface): we walk horizontally with upmove cleared, letting
-	// the climb-attach trace miss and gravity bring the bot down.
-	if ( heightDiff < 0.f && ( self->client->ps.eFlags & ( EF_WALLCLIMB | EF_WALLCLIMBCEILING ) ) )
-	{
-		glm::vec3 toTarget = targetPos - ownPos;
-		toTarget.z = 0.f;
-		const float targetDist = glm::length( toTarget );
-		if ( targetDist > 1.f && ( seekRange <= 0.f || targetDist <= seekRange ) )
-		{
-			if ( wantDebug && level.time >= s_nextLog )
-			{
-				s_nextLog = level.time + 1000;
-				Log::Notice( "Wallwalk: client %d (%s) target %.0f below self, walking to its XZ to drop off",
-					self->s.number, BG_Class( classNum )->name, heightDiff );
-			}
-			BotSeek( self, toTarget );
-			self->botMind->cmdBuffer.upmove = 0;
-			return true;
-		}
-	}
-
-	// The target is below us but we are not attached to anything, or a target above us is
-	// within the jump apex: a jump/pounce reaches it, so leave it to the ordinary upward
-	// movement below and don't climb.
-	if ( heightDiff < climbMin )
-	{
-		if ( wantDebug && level.time >= s_nextLog )
-		{
-			s_nextLog = level.time + 1000;
-			Log::Notice( "Wallwalk: client %d (%s) target only %.0f above (self z %.0f, target z %.0f), below min height %.0f -> not climbing",
-				self->s.number, BG_Class( classNum )->name, heightDiff, ownPos.z, targetPos.z, climbMin );
-		}
-		return false;
-	}
-
 	// The target is above our jump apex: climbing is the only way up, so walk horizontally
 	// toward a climb point and bite it once we arrive. We walk to the *nearest wall base*
 	// within the seek range -- that is the surface the bot can actually climb, and for a
@@ -1439,8 +1452,8 @@ bool BotWallwalkClimbTowardGoal( gentity_t *self )
 		if ( wantDebug && level.time >= s_nextLog )
 		{
 			s_nextLog = level.time + 1000;
-			Log::Notice( "Wallwalk: client %d (%s) target %.0f above, walking to wall base %.0f away",
-				self->s.number, BG_Class( classNum )->name, heightDiff, markerDist );
+			Log::Notice( "Wallwalk: client %d (%s) target %.0f above, walking to wall base %.0f away (top %.0f, target %.0f)",
+				self->s.number, BG_Class( classNum )->name, heightDiff, markerDist, markerTopZ, targetPos.z );
 		}
 		// Walk horizontally to the wall base; the z is zeroed so we reach the base and the
 		// bite above takes us up on the next tick. Crouching a wall that is still a few
@@ -1474,11 +1487,11 @@ bool BotWallwalkClimbTowardGoal( gentity_t *self )
 		}
 		else
 		{
-			Log::Notice( "Wallwalk: client %d (%s) target at (%.0f,%.0f,%.0f) is %.0f above self (%.0f,%.0f,%.0f); nearest of %d wall marker(s) base at (%.0f,%.0f,%.0f) is %.0f away (target %.0f away), beyond seek range %.0f",
+			Log::Notice( "Wallwalk: client %d (%s) target at (%.0f,%.0f,%.0f) is %.0f above self (%.0f,%.0f,%.0f); nearest of %d wall marker(s) base at (%.0f,%.0f,%.0f) top %.0f is %.0f away (target %.0f away), beyond seek range %.0f",
 				self->s.number, BG_Class( classNum )->name,
 				targetPos.x, targetPos.y, targetPos.z, heightDiff,
 				ownPos.x, ownPos.y, ownPos.z,
-				wallCount, markerPos.x, markerPos.y, markerPos.z, markerDist, targetDist, seekRange );
+				wallCount, markerPos.x, markerPos.y, markerPos.z, markerTopZ, markerDist, targetDist, seekRange );
 		}
 	}
 
@@ -1528,8 +1541,10 @@ bool BotWallwalkBuildTowardGoal( gentity_t *self )
 	glm::vec3 markerPos;
 	float markerDist = 0.f;
 	int wallCount = 0;
-	const bool hasWall = G_BotNearestWallConnection( self->s.number, ownPos, targetPos, markerPos, markerDist, wallCount );
+	float markerTopZ = 0.f;
+	const bool hasWall = G_BotNearestWallConnection( self->s.number, ownPos, targetPos, markerPos, markerDist, wallCount, markerTopZ, g_bot_wallwalkHeightReach.Get() );
 	( void )wallCount;
+	( void )markerTopZ;
 
 	// Primary trigger: at the base of a generated wall (within the detect range of its
 	// base marker), bite it and climb to the elevated spot. Same fix as the combat path --

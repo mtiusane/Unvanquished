@@ -289,12 +289,13 @@ bool G_BotNextCornerIsWallwalk( int botClientNum )
 // converted with ToQuake() before being handed back. Only the bridge connections emitted
 // for wallwalk-capable classes carry POLYFLAGS_WALLWALK, so this never matches
 // hand-authored navcons.
-bool G_BotNearestWallConnection( int botClientNum, const glm::vec3 &ownPos, const glm::vec3 &targetPos, glm::vec3 &markerPos, float &markerDist, int &wallCount )
+bool G_BotNearestWallConnection( int botClientNum, const glm::vec3 &ownPos, const glm::vec3 &targetPos, glm::vec3 &markerPos, float &markerDist, int &wallCount, float &markerTopZ, float heightReachBias )
 {
 	Bot_t *bot = &agents[ botClientNum ];
 	if ( !bot->nav )
 	{
 		wallCount = 0;
+		markerTopZ = 0.f;
 		return false;
 	}
 
@@ -302,6 +303,7 @@ bool G_BotNearestWallConnection( int botClientNum, const glm::vec3 &ownPos, cons
 	if ( con.offMeshConCount == 0 )
 	{
 		wallCount = 0;
+		markerTopZ = 0.f;
 		return false;
 	}
 
@@ -328,6 +330,7 @@ bool G_BotNearestWallConnection( int botClientNum, const glm::vec3 &ownPos, cons
 	float bestCost = 1e18f;
 	float bestDistSq = 0.f;
 	wallCount = 0;
+	markerTopZ = 0.f;
 	for ( int i = 0; i < con.offMeshConCount; ++i )
 	{
 		if ( ( con.flags[ i ] & navPolyFlags::POLYFLAGS_WALLWALK ) == 0 )
@@ -346,17 +349,35 @@ bool G_BotNearestWallConnection( int botClientNum, const glm::vec3 &ownPos, cons
 		const float dz = start[ 2 ] - spos[ 2 ];
 		const float d2 = dx * dx + dz * dz;
 
+		// The wall's top (end) in quake space (Z up), used by the "reaches the target"
+		// preference below.
+		rVec end = rVec::Load( &con.verts[ i * 6 + 3 ] );
+		const float topZ = end.ToQuake()[ 2 ];
+
 		// For an elevated target (or one directly overhead, with no horizontal direction)
-		// score by pure horizontal distance so the bot commits to the nearest climbable
-		// wall. Otherwise score by the extra distance the marker adds relative to heading
-		// straight for the target: |bot->marker| minus its projection onto the target
-		// direction. A marker on the direct path has projection ~= its distance, so cost
-		// ~= 0; a wall behind or beside the bot has smaller (or negative) projection and a
-		// higher cost, so it loses.
+		// start from pure horizontal distance so the bot commits to a nearby climbable
+		// wall. When the target is above, add a squared penalty for how far the wall's top
+		// falls short of the target (times heightReachBias): a wall that reaches the target
+		// is preferred, but because the penalty is squared a nearer, shorter wall still
+		// beats a far tall one -- so the bot plans a detour through the closest wall that
+		// can actually get it up, "as long as they dont need to walk too far to reach
+		// them". heightReachBias 0 falls back to the plain nearest wall. Otherwise score by
+		// the extra distance the marker adds relative to heading straight for the target:
+		// |bot->marker| minus its projection onto the target direction. A marker on the
+		// direct path has projection ~= its distance, so cost ~= 0; a wall behind or beside
+		// the bot has a smaller (or negative) projection and a higher cost, so it loses.
 		float cost;
 		if ( targetIsAbove || tlen2 < 1e-6f )
 		{
 			cost = d2;
+			if ( targetIsAbove )
+			{
+				const float shortfall = targetPos.z - topZ;
+				if ( shortfall > 0.f )
+				{
+					cost += shortfall * shortfall * heightReachBias;
+				}
+			}
 		}
 		else
 		{
@@ -371,8 +392,10 @@ bool G_BotNearestWallConnection( int botClientNum, const glm::vec3 &ownPos, cons
 			found = true;
 			// Hand the caller a quake-space (Z up) position: the stored start is in the
 			// recast frame, so convert it. This is the base of the wall the bot should
-			// walk toward and climb from.
+			// walk toward and climb from. markerTopZ is that wall's top (quake Z), so the
+			// caller can see whether it reaches the target.
 			markerPos = start.ToQuake();
+			markerTopZ = topZ;
 		}
 	}
 
