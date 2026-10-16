@@ -1517,21 +1517,24 @@ bool BotWallwalkBuildTowardGoal( gentity_t *self )
 	glm::vec3 ownPos = VEC2GLM( self->s.origin );
 	glm::vec3 targetPos = goal.getPos();
 
-	// Already at or above the goal's height: the elevated spot is reached, so let the
-	// build flow take over on the next tick.
-	if ( targetPos.z <= ownPos.z + 40.f )
-	{
-		return false;
-	}
-
 	const float detectRange = g_bot_wallwalkDetectRange.Get();
 
-	// A climb is in progress (within the hold window) and we're still below the goal:
-	// keep biting up the wall toward the elevated spot instead of dropping off.
+	// While a climb is in progress (physically attached to the wall/ceiling, or within
+	// its hold window) keep biting up toward the elevated spot instead of dropping off or
+	// handing off: the build flow's G_CanBuild only accepts a near-horizontal surface, so
+	// the bot must actually reach the top before we yield control -- a handoff while still
+	// on the vertical face would just fail the build there.
 	if ( BotIsWallClimbing( self ) )
 	{
 		BotClimbToward( self, targetPos );
 		return true;
+	}
+
+	// Only once off the wall: at or above the goal's height the elevated spot is reached,
+	// so let the build flow take over on the next tick.
+	if ( targetPos.z <= ownPos.z + 40.f )
+	{
+		return false;
 	}
 
 	// Locate the wall whose base best reaches the goal: when the goal is above the bot the
