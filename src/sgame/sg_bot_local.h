@@ -188,6 +188,11 @@ public:
 		// last time (level.time) this bot issued a wall climb; keeps the bot biting on
 		// the wall and suppresses jumps/pounces for g_bot_wallwalkClimbHoldTime ms
 		int lastWallClimbTime;
+		// last time (level.time) this bot committed to detouring to a nearby wall to reach a
+		// target above it; keeps the detour active for BOT_WALLWALK_DETOUR_COMMIT_WINDOW ms
+		// so the bot walks to and climbs the wall instead of un-sticking mid-detour and
+		// falling back under the target. 0 means "never committed" (the initial/reset state).
+		int wallwalkDetourTime;
 		bool hasOffmeshGoal;
 	// }
 

@@ -800,6 +800,7 @@ void G_Bot_ResetBehaviorState( botMemory_t &memory )
 	memory.lastNavconTime = 0;
 	memory.lastNavconDistance = 0;
 	memory.lastWallClimbTime = 0;
+	memory.wallwalkDetourTime = 0;
 	memory.hasOffmeshGoal = false;
 }
 

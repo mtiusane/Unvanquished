@@ -316,15 +316,22 @@ bool G_BotNearestWallConnection( int botClientNum, const glm::vec3 &ownPos, cons
 	const float tdz = tpos[ 2 ] - spos[ 2 ];
 	const float tlen2 = tdx * tdx + tdz * tdz;
 
-	// When the target sits meaningfully above the bot, committing to the genuinely nearest
-	// wall (by horizontal distance) is the right choice: an elevated target is reached by
-	// getting up on any nearby wall and re-evaluating from its top. The on-the-way detour
-	// cost below instead rewards a wall that lies on the line to the target, which for an
-	// offset-elevated target can be a far wall -- the reported distance then exceeds the
-	// seek range and the bot falls back to standing under the target, even when a climbable
-	// wall is actually close. The height test is in the quake frame (Z up), where both
-	// positions arrive.
-	const bool targetIsAbove = targetPos.z - ownPos.z > 64.f;
+	// When the target sits above the bot (by any amount), committing to the genuinely
+	// nearest wall (by horizontal distance) is the right choice: an elevated target is
+	// reached by getting up on a nearby wall and re-evaluating from its top. The on-the-way
+	// detour cost below instead rewards a wall that lies on the line to the target, which
+	// for an offset-elevated target can be a far wall -- the reported distance then exceeds
+	// the seek range and the bot falls back to standing under the target, even when a
+	// climbable wall is actually close.
+	//
+	// The threshold is "above by any amount", not a fixed height, because an enclosed
+	// platform can be only a few units up yet unreachable except by climbing a wall beside
+	// it: a fixed threshold (the old 64) let such a low platform fall through to the
+	// on-the-way cost, which selects a short wall under the platform the bot can't pass, so
+	// the bot never detoured. A target at or below the bot is an ordinary same-level approach,
+	// which instead prefers a wall that lies on the way to it. The height test is in the
+	// quake frame (Z up), where both positions arrive.
+	const bool targetIsAbove = targetPos.z > ownPos.z;
 
 	bool found = false;
 	float bestCost = 1e18f;
