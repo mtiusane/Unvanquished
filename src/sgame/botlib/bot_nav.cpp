@@ -364,21 +364,28 @@ bool G_BotNearestWallConnection( int botClientNum, const glm::vec3 &ownPos, cons
 		// For an elevated target (or one directly overhead, with no horizontal direction)
 		// start from pure horizontal distance so the bot commits to a nearby climbable
 		// wall. When the target is above, add a squared penalty for how far the wall's top
-		// falls short of the target (times heightReachBias): a wall that reaches the target
-		// is preferred, but because the penalty is squared a nearer, shorter wall still
-		// beats a far tall one -- so the bot plans a detour through the closest wall that
-		// can actually get it up, "as long as they dont need to walk too far to reach
-		// them". heightReachBias 0 falls back to the plain nearest wall. Otherwise score by
-		// the extra distance the marker adds relative to heading straight for the target:
-		// |bot->marker| minus its projection onto the target direction. A marker on the
-		// direct path has projection ~= its distance, so cost ~= 0; a wall behind or beside
-		// the bot has a smaller (or negative) projection and a higher cost, so it loses.
+		// *falls short* of the target (times heightReachBias): a wall that reaches the target
+		// is preferred, but because the penalty is squared a nearer, shorter wall still beats
+		// a far tall one -- so the bot plans a detour through the closest wall that can
+		// actually get it up, "as long as they dont need to walk too far to reach them".
+		// Overshoot is deliberately NOT penalized: a wall whose top is above the target is a
+		// valid, often better, choice, because from that high vantage the bot can jump or
+		// simply fall back down onto the target. heightReachBias 0 falls back to the plain
+		// nearest wall. Otherwise score by the extra distance the marker adds relative to
+		// heading straight for the target: |bot->marker| minus its projection onto the target
+		// direction. A marker on the direct path has projection ~= its distance, so cost ~= 0;
+		// a wall behind or beside the bot has a smaller (or negative) projection and a higher
+		// cost, so it loses.
 		float cost;
 		if ( targetIsAbove || tlen2 < 1e-6f )
 		{
 			cost = d2;
 			if ( targetIsAbove )
 			{
+				// One-sided: only a shortfall (wall top below the target) is penalized. An
+				// overshoot (wall top above the target) is free -- from that height the bot
+				// can jump or fall back down onto the target, so a taller wall is a fine or
+				// even better climb and must not be dispreferred by the height term.
 				const float shortfall = targetPos.z - topZ;
 				if ( shortfall > 0.f )
 				{
