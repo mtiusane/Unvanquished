@@ -1483,7 +1483,10 @@ bool BotWallwalkClimbTowardGoal( gentity_t *self )
 	float markerDist = 0.f;
 	int wallCount = 0;
 	float markerTopZ = 0.f;
-	const bool hasWall = G_BotNearestWallConnection( self->s.number, ownPos, targetPos, markerPos, markerDist, wallCount, markerTopZ, g_bot_wallwalkHeightReach.Get() );
+	// Fresh search for the nearest reachable wall this tick. The mesh is static, so while a
+	// detour is committed (below) the walk-to-base and bite phases instead drive to the wall
+	// the bot locked on, rather than re-picking the nearest wall every tick as the target moves.
+	bool hasWall = G_BotNearestWallConnection( self->s.number, ownPos, targetPos, markerPos, markerDist, wallCount, markerTopZ, g_bot_wallwalkHeightReach.Get() );
 
 	// A wall whose top reaches (or passes) the target's height is a signal that the target is
 	// on a surface the bot can only get to by climbing -- e.g. a bridge or platform the bot is
@@ -1507,12 +1510,36 @@ bool BotWallwalkClimbTowardGoal( gentity_t *self )
 	// me" symptom. A value of 0 means "never committed" (the initial state), so a freshly spawned
 	// bot is not treated as mid-detour.
 	const bool pursuingClimb = needDetour || ( wallInSeek && heightDiff > 0.f );
+	const bool withinCommitWindow = self->botMind->wallwalkDetourTime > 0
+		&& level.time - self->botMind->wallwalkDetourTime < BOT_WALLWALK_DETOUR_COMMIT_WINDOW;
+
+	// On the tick a detour begins, lock the wall we are heading to so the bot commits to *that*
+	// wall for the window instead of re-picking the nearest wall every tick as the target moves
+	// -- the erratic "walk to one wall, bail, turn to the other" behaviour. The window is
+	// refreshed every tick while pursuing, so the bot stays committed to the same wall (and
+	// finishes the climb) for the whole approach rather than flipping walls.
 	if ( pursuingClimb && hasWall )
 	{
+		if ( !withinCommitWindow )
+		{
+			self->botMind->wallwalkDetourPos = markerPos;
+		}
 		self->botMind->wallwalkDetourTime = level.time;
 	}
-	const bool detourCommit = self->botMind->wallwalkDetourTime > 0
-		&& level.time - self->botMind->wallwalkDetourTime < BOT_WALLWALK_DETOUR_COMMIT_WINDOW;
+
+	// Within the commit window the walk-to-base and bite phases drive to the *locked* wall (a
+	// stable point) instead of the freshly searched marker, so the bot finishes the climb it
+	// started rather than oscillating between two near walls as the target moves. The locked
+	// marker is a real mesh wall, so force hasWall true even if this tick's fresh search found
+	// nothing, keeping the walk/bite phases active.
+	const bool detourCommit = withinCommitWindow;
+	if ( detourCommit )
+	{
+		const glm::vec3 locked = self->botMind->wallwalkDetourPos;
+		markerPos = locked;
+		markerDist = glm::length( glm::vec3( locked.x - ownPos.x, locked.y - ownPos.y, 0.f ) );
+		hasWall = true;
+	}
 
 	// Throttled diagnostic of the positional boxed-in trigger, so the user can see the bot
 	// commit to a wall detour immediately (boxedIn) rather than after the 2.5 s stuck timer.
@@ -1731,9 +1758,33 @@ bool BotWallwalkBuildTowardGoal( gentity_t *self )
 	float markerDist = 0.f;
 	int wallCount = 0;
 	float markerTopZ = 0.f;
-	const bool hasWall = G_BotNearestWallConnection( self->s.number, ownPos, targetPos, markerPos, markerDist, wallCount, markerTopZ, g_bot_wallwalkHeightReach.Get() );
+	// Fresh search for the nearest reachable wall this tick. As in the combat path, while a
+	// detour is committed the builder drives to the wall it locked on rather than re-picking the
+	// nearest wall every tick as it approaches the elevated build spot.
+	bool hasWall = G_BotNearestWallConnection( self->s.number, ownPos, targetPos, markerPos, markerDist, wallCount, markerTopZ, g_bot_wallwalkHeightReach.Get() );
 	( void )wallCount;
 	( void )markerTopZ;
+
+	// Lock the wall the builder heads to so it commits to one wall to reach the elevated build
+	// spot instead of re-picking the nearest wall every tick. The window is refreshed while a
+	// wall is in range, so the builder stays with the same wall for the whole approach.
+	const bool withinCommitWindow = self->botMind->wallwalkDetourTime > 0
+		&& level.time - self->botMind->wallwalkDetourTime < BOT_WALLWALK_DETOUR_COMMIT_WINDOW;
+	if ( hasWall )
+	{
+		if ( !withinCommitWindow )
+		{
+			self->botMind->wallwalkDetourPos = markerPos;
+		}
+		self->botMind->wallwalkDetourTime = level.time;
+	}
+	if ( withinCommitWindow )
+	{
+		const glm::vec3 locked = self->botMind->wallwalkDetourPos;
+		markerPos = locked;
+		markerDist = glm::length( glm::vec3( locked.x - ownPos.x, locked.y - ownPos.y, 0.f ) );
+		hasWall = true;
+	}
 
 	// Primary trigger: at the base of a generated wall (within the detect range of its
 	// base marker), bite it and climb to the elevated spot. Same fix as the combat path --

@@ -193,6 +193,13 @@ public:
 		// so the bot walks to and climbs the wall instead of un-sticking mid-detour and
 		// falling back under the target. 0 means "never committed" (the initial/reset state).
 		int wallwalkDetourTime;
+		// the base marker of the wall this bot locked onto when it started the detour above;
+		// while wallwalkDetourTime is within the commit window the walk-to-base and bite phases
+		// drive to *this* wall instead of re-picking the nearest wall every tick as the target
+		// moves -- otherwise the bot oscillates between two near walls ("walk to one, bail,
+		// turn to the other"). 0/zero is the reset state; validity is governed by
+		// wallwalkDetourTime, not by this position.
+		glm::vec3 wallwalkDetourPos;
 		bool hasOffmeshGoal;
 	// }
 

@@ -1257,6 +1257,10 @@ bool BotChangeGoal( gentity_t *self, botTarget_t target )
 		     && G_Team( target.getTargetedEntity() ) == TEAM_ALIENS
 		     && BotTargetIsVisible( self, target, MASK_SHOT ) )
 		{
+			// A new goal means a new detour context; invalidate the old locked wall so the
+			// bot doesn't keep heading to a wall chosen for a previous target.
+			self->botMind->wallwalkDetourTime = 0;
+			self->botMind->wallwalkDetourPos = glm::vec3( 0.f, 0.f, 0.f );
 			self->botMind->goal = target;
 			self->botMind->m_nav.directPathToGoal = false;
 			self->botMind->hasOffmeshGoal = true;
@@ -1265,6 +1269,10 @@ bool BotChangeGoal( gentity_t *self, botTarget_t target )
 		return false;
 	}
 
+	// A new goal means a new detour context; invalidate the old locked wall so the bot
+	// doesn't keep heading to a wall chosen for a previous target.
+	self->botMind->wallwalkDetourTime = 0;
+	self->botMind->wallwalkDetourPos = glm::vec3( 0.f, 0.f, 0.f );
 	self->botMind->goal = target;
 	self->botMind->m_nav.directPathToGoal = false;
 	self->botMind->hasOffmeshGoal = false;
