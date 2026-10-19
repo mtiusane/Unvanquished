@@ -802,6 +802,8 @@ void G_Bot_ResetBehaviorState( botMemory_t &memory )
 	memory.lastWallClimbTime = 0;
 	memory.wallwalkDetourTime = 0;
 	memory.wallwalkDetourPos = glm::vec3( 0.f, 0.f, 0.f );
+	memory.wallwalkWalkBestDist = 1.0e10f;
+	memory.wallwalkWalkNoProgressTime = 0;
 	memory.hasOffmeshGoal = false;
 }
 

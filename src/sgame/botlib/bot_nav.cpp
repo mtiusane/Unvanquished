@@ -289,7 +289,7 @@ bool G_BotNextCornerIsWallwalk( int botClientNum )
 // converted with ToQuake() before being handed back. Only the bridge connections emitted
 // for wallwalk-capable classes carry POLYFLAGS_WALLWALK, so this never matches
 // hand-authored navcons.
-bool G_BotNearestWallConnection( int botClientNum, const glm::vec3 &ownPos, const glm::vec3 &targetPos, glm::vec3 &markerPos, float &markerDist, int &wallCount, float &markerTopZ, float heightReachBias )
+bool G_BotNearestWallConnection( int botClientNum, const glm::vec3 &ownPos, const glm::vec3 &targetPos, glm::vec3 &markerPos, float &markerDist, int &wallCount, float &markerTopZ, float heightReachBias, float overshootBias )
 {
 	Bot_t *bot = &agents[ botClientNum ];
 	if ( !bot->nav )
@@ -379,17 +379,40 @@ bool G_BotNearestWallConnection( int botClientNum, const glm::vec3 &ownPos, cons
 		float cost;
 		if ( targetIsAbove || tlen2 < 1e-6f )
 		{
-			cost = d2;
+			// The detour cost is the full route: walk to the wall base, then from the
+			// top to the target. A vertical wall's top shares the base's XZ, so the
+			// horizontal part is bot->base->target. The base->target term is what stops
+			// the bot from detouring to a wall on the far side -- or the *opposite* side
+			// -- of the target: such a wall's top ends up far from the target even when
+			// its base is near the bot, so it loses to a wall that lands the bot close to
+			// the target. This is the "went the opposite way and got stuck on that wall"
+			// fix: pure bot->base distance (the old cost) happily picked a near wall on
+			// the wrong side. A target directly overhead makes base->target ~= bot->base,
+			// so the nearest base still wins. `end` is the marker's top (recast frame),
+			// where the bot ends up after climbing.
+			const float mTx = tpos[0] - end[0]; // recast x = quake x
+			const float mTy = tpos[2] - end[2]; // recast z = quake y
+			cost = d2 + mTx * mTx + mTy * mTy;
 			if ( targetIsAbove )
 			{
-				// One-sided: only a shortfall (wall top below the target) is penalized. An
-				// overshoot (wall top above the target) is free -- from that height the bot
-				// can jump or fall back down onto the target, so a taller wall is a fine or
-				// even better climb and must not be dispreferred by the height term.
+				// A shortfall (wall top below the target) is penalized heavily: a wall that
+				// can't reach the target's height is a dead end. An overshoot (wall top above
+				// the target) is penalized more lightly -- from a taller vantage the bot can
+				// jump or fall back down onto the target, so overshoot is recoverable -- but
+				// left free it makes the bot climb a wall far taller than the target and end up
+				// far above and off the target's XZ (the "loops on the ceiling, never drops
+				// down" symptom), so a light penalty steers it toward a wall whose top is near
+				// the target's height. overshootBias 0 disables the overshoot penalty (the
+				// original free-overshoot behaviour).
 				const float shortfall = targetPos.z - topZ;
 				if ( shortfall > 0.f )
 				{
 					cost += shortfall * shortfall * heightReachBias;
+				}
+				else
+				{
+					const float overshoot = -shortfall; // topZ - targetPos.z, > 0
+					cost += overshoot * overshoot * overshootBias;
 				}
 			}
 		}

@@ -1261,6 +1261,8 @@ bool BotChangeGoal( gentity_t *self, botTarget_t target )
 			// bot doesn't keep heading to a wall chosen for a previous target.
 			self->botMind->wallwalkDetourTime = 0;
 			self->botMind->wallwalkDetourPos = glm::vec3( 0.f, 0.f, 0.f );
+			self->botMind->wallwalkWalkBestDist = 1.0e10f;
+			self->botMind->wallwalkWalkNoProgressTime = 0;
 			self->botMind->goal = target;
 			self->botMind->m_nav.directPathToGoal = false;
 			self->botMind->hasOffmeshGoal = true;
@@ -1273,6 +1275,8 @@ bool BotChangeGoal( gentity_t *self, botTarget_t target )
 	// doesn't keep heading to a wall chosen for a previous target.
 	self->botMind->wallwalkDetourTime = 0;
 	self->botMind->wallwalkDetourPos = glm::vec3( 0.f, 0.f, 0.f );
+	self->botMind->wallwalkWalkBestDist = 1.0e10f;
+	self->botMind->wallwalkWalkNoProgressTime = 0;
 	self->botMind->goal = target;
 	self->botMind->m_nav.directPathToGoal = false;
 	self->botMind->hasOffmeshGoal = false;

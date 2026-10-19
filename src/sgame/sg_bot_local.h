@@ -200,6 +200,14 @@ public:
 		// turn to the other"). 0/zero is the reset state; validity is governed by
 		// wallwalkDetourTime, not by this position.
 		glm::vec3 wallwalkDetourPos;
+		// Wall-base progress tracking for the detour walk phase. `wallwalkWalkBestDist` is the
+		// smallest horizontal distance the bot has reached to the locked wall base this detour,
+		// and `wallwalkWalkNoProgressTime` the last time (level.time) it got meaningfully
+		// closer. Together they detect the "bot slides in a circle under a platform and never
+		// reaches the wall it is detouring to" symptom, so the walk can arc around the blocker
+		// (move away first) instead of pressing into it forever. Reset with the detour context.
+		float wallwalkWalkBestDist;
+		int   wallwalkWalkNoProgressTime;
 		bool hasOffmeshGoal;
 	// }
 
@@ -260,7 +268,7 @@ bool G_BotNextCornerIsWallwalk( int botClientNum );
 // `markerPos`/`markerDist` to the chosen marker when any exist, else false (climbing
 // impossible). `wallCount` is set to the number of POLYFLAGS_WALLWALK markers in the mesh
 // (0 when the mesh has none), regardless of the return value.
-bool G_BotNearestWallConnection( int botClientNum, const glm::vec3 &ownPos, const glm::vec3 &targetPos, glm::vec3 &markerPos, float &markerDist, int &wallCount, float &markerTopZ, float heightReachBias );
+bool G_BotNearestWallConnection( int botClientNum, const glm::vec3 &ownPos, const glm::vec3 &targetPos, glm::vec3 &markerPos, float &markerDist, int &wallCount, float &markerTopZ, float heightReachBias, float overshootBias );
 // As G_BotNearestWallConnection but returns the TOP (end) of the nearest
 // wall/ceiling marker to `refPos`, so a wallwalk-capable builder can target an
 // elevated build spot; `dist` is the horizontal distance to that marker's base.
