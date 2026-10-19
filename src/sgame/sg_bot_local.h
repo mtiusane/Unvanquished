@@ -267,8 +267,10 @@ bool G_BotNextCornerIsWallwalk( int botClientNum );
 // a wall on the way to it is preferred over the globally nearest one. Returns true and sets
 // `markerPos`/`markerDist` to the chosen marker when any exist, else false (climbing
 // impossible). `wallCount` is set to the number of POLYFLAGS_WALLWALK markers in the mesh
-// (0 when the mesh has none), regardless of the return value.
-bool G_BotNearestWallConnection( int botClientNum, const glm::vec3 &ownPos, const glm::vec3 &targetPos, glm::vec3 &markerPos, float &markerDist, int &wallCount, float &markerTopZ, float heightReachBias, float overshootBias );
+// (0 when the mesh has none), regardless of the return value. `lateralBias` (> 0) adds a
+// reward for a wall that sits to the bot's side (perpendicular to the bot->target line) so
+// the bot can strafe toward it while closing on the target; 0 disables it.
+bool G_BotNearestWallConnection( int botClientNum, const glm::vec3 &ownPos, const glm::vec3 &targetPos, glm::vec3 &markerPos, float &markerDist, int &wallCount, float &markerTopZ, float heightReachBias, float overshootBias, float lateralBias );
 // As G_BotNearestWallConnection but returns the TOP (end) of the nearest
 // wall/ceiling marker to `refPos`, so a wallwalk-capable builder can target an
 // elevated build spot; `dist` is the horizontal distance to that marker's base.

@@ -289,7 +289,12 @@ bool G_BotNextCornerIsWallwalk( int botClientNum )
 // converted with ToQuake() before being handed back. Only the bridge connections emitted
 // for wallwalk-capable classes carry POLYFLAGS_WALLWALK, so this never matches
 // hand-authored navcons.
-bool G_BotNearestWallConnection( int botClientNum, const glm::vec3 &ownPos, const glm::vec3 &targetPos, glm::vec3 &markerPos, float &markerDist, int &wallCount, float &markerTopZ, float heightReachBias, float overshootBias )
+//
+// lateralBias (> 0) rewards a wall that sits to the bot's *side* -- perpendicular to the
+// bot->target line -- so the bot can strafe toward it while still closing on the target, the
+// "keep approaching me while strafing to the climb wall" behaviour. 0 disables it (plain
+// nearest-by-route selection).
+bool G_BotNearestWallConnection( int botClientNum, const glm::vec3 &ownPos, const glm::vec3 &targetPos, glm::vec3 &markerPos, float &markerDist, int &wallCount, float &markerTopZ, float heightReachBias, float overshootBias, float lateralBias )
 {
 	Bot_t *bot = &agents[ botClientNum ];
 	if ( !bot->nav )
@@ -414,6 +419,21 @@ bool G_BotNearestWallConnection( int botClientNum, const glm::vec3 &ownPos, cons
 					const float overshoot = -shortfall; // topZ - targetPos.z, > 0
 					cost += overshoot * overshoot * overshootBias;
 				}
+			}
+			// Lateral preference: reward a wall that sits to the bot's *side* (perpendicular to
+			// the bot->target line) so the bot can strafe toward it while still closing on the
+			// target -- the "keep approaching me while strafing to the climb wall" behaviour. A
+			// wall dead ahead forces a head-on walk; one directly behind needs a big detour. The
+			// lateral offset is the perpendicular distance from the wall base to the bot->target
+			// line (a 2D cross product in the horizontal plane). Capped at 128 units so a far side
+			// wall does not beat a near one, and scaled by lateralBias (0 disables it). Only for an
+			// elevated target with a real bot->target direction (a target directly overhead has
+			// none, so it is skipped).
+			if ( lateralBias > 0.f && tlen2 > 1e-6f )
+			{
+				const float tlen = std::sqrt( tlen2 );
+				const float lateral = std::fabs( dx * tdz - dz * tdx ) / tlen;
+				cost -= std::min( lateral, 128.f ) * lateralBias;
 			}
 		}
 		else

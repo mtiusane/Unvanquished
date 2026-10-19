@@ -48,6 +48,21 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 #define pm_waterfriction     (1.125f)
 #define pm_spectatorfriction (5.0f)
 
+// Corner / top-edge reattach reach for wallwalkers. The grip-reattach trace
+// (PM_GroundClimbTrace) only reaches a short distance into the move direction, so a
+// wallwalker that reaches the top of a wall or rounds a perpendicular corner can lose
+// its grip instead of transitioning onto the adjacent face -- the "drops when going
+// around a corner" bug that affects players and bots alike. While climbing and moving
+// up, and only after the short-attach catchers have missed, we trace this many further
+// units into the move direction so a perpendicular wall or the top edge is grabbed
+// instead of the unit falling. 0 disables the extra reach (plain short-attach
+// behaviour). It is a pmove cvar (Cvar::SYSTEMINFO) so client and server stay in
+// agreement for prediction, and it affects every wallwalk-capable class.
+static Cvar::Cvar<float> g_wallwalkCornerReach(
+	"g_wallwalkCornerReach",
+	"how far (quake units) into the move direction a wallwalker's grip reattach reaches when climbing and moving up, so it can round a corner or reach a top edge instead of dropping off; 0 disables",
+	Cvar::SYSTEMINFO, 12.0f );
+
 
 // all of the locals will be zeroed before each
 // pmove, just to make damn sure we don't have
@@ -2434,6 +2449,7 @@ enum attachPoint_t {
 	GCT_ATP_STEPMOVE,
 	GCT_ATP_UNDERNEATH,
 	GCT_ATP_CEILING,
+	GCT_ATP_CORNER,
 	GCT_ATP_FALLBACK,
 	NUM_GCT_ATP
 };
@@ -2568,6 +2584,27 @@ static void PM_GroundClimbTrace()
 				point[ 2 ] = pm->ps->origin[ 2 ] - 0.25f;
 				pm->trace( &trace, pm->ps->origin, pm->mins, pm->maxs, point, pm->ps->clientNum,
 				           pm->tracemask, 0 );
+
+				break;
+			case GCT_ATP_CORNER:
+				// Rounding a corner or reaching the top of a wall: every short-attach
+				// catcher (MOVEDIRECTION / GROUND) has missed, so the 0.25-unit reach could
+				// not bridge the edge onto the adjacent face. Only while still attached and
+				// moving up, trace further into the move direction to grab a perpendicular
+				// wall or the top edge instead of dropping -- the corner/top-edge fix. Gated
+				// on the cvar so it can be tuned or disabled; 0 falls through to the fallback.
+				if ( g_wallwalkCornerReach.Get() > 0.0f
+						&& ( pm->ps->eFlags & ( EF_WALLCLIMB | EF_WALLCLIMBCEILING ) )
+						&& velocityDir[ 2 ] > 0.05f )
+				{
+					VectorMA( pm->ps->origin, g_wallwalkCornerReach.Get(), moveDir, point );
+					pm->trace( &trace, pm->ps->origin, pm->mins, pm->maxs, point, pm->ps->clientNum,
+					           pm->tracemask, CONTENTS_BODY );
+				}
+				else
+				{
+					continue;
+				}
 
 				break;
 			case NUM_GCT_ATP: // WARNING: this is actually reached, for example when jumping while wallwalking

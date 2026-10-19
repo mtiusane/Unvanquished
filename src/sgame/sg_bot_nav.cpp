@@ -1005,6 +1005,22 @@ static Cvar::Cvar<float> g_bot_wallwalkHeightReach(
 // (overshoot is recoverable -- the bot can drop down -- whereas a shortfall cannot be).
 static Cvar::Cvar<float> g_bot_wallwalkOvershootReach(
 	"g_bot_wallwalkOvershootReach", "when reaching for a target above the bot, how strongly a wallwalk-capable bot dislikes a wall whose top is above the target (squared height-overshoot weight; 0 = no overshoot penalty, tall walls never dispreferred)", Cvar::NONE, 1.f );
+// The height above the bot that a target must exceed before a wall detour is forced for it
+// (independent of being boxed in). A target within the class's jump apex plus its melee bite
+// reach is reached by an ordinary jump/bite, so a wall detour for such a target only happens
+// when the bot is boxed in under it -- the fix for "bots detour to a wall even for a target
+// just a little above them". 0 (default) computes it from the class's own apex + bite reach;
+// a positive value pins an explicit threshold (quake units).
+static Cvar::Cvar<float> g_bot_wallwalkJumpReach(
+	"g_bot_wallwalkJumpReach", "a target must sit this far above the bot before a wallwalk-capable bot detours to climb a wall for it (instead of just jumping/biting); 0 (default) uses the class's own jump apex plus its melee bite reach", Cvar::NONE, 0.f );
+// Lateral preference for the climb wall: when > 0, a wall that sits to the bot's *side*
+// (perpendicular to the bot->target line) is preferred over one dead ahead or behind, so the
+// bot can strafe toward it while still closing on the target -- the "keep approaching me while
+// strafing to the climb wall" behaviour. The reward is the (capped) perpendicular distance from
+// the wall base to the bot->target line times this weight, subtracted from the route cost. 0
+// (default) disables it (plain nearest-by-route selection).
+static Cvar::Cvar<float> g_bot_wallwalkLateralBias(
+	"g_bot_wallwalkLateralBias", "when picking the wall to climb for a target above, how strongly a wallwalk-capable bot prefers a wall to its side (left/right) so it can strafe toward it while approaching the target; 0 disables the lateral preference", Cvar::NONE, 0.f );
 static Cvar::Cvar<bool> g_bot_wallwalkDebug(
 	"g_bot_wallwalkDebug", "log wallwalk climb-trigger diagnostics for wallwalk-capable bots (throttled)", Cvar::NONE, false );
 
@@ -1030,6 +1046,31 @@ static float BotClimbMinHeight( gentity_t *self )
 	// Match BotDetectObstacle's "actual height of our jump" so the threshold is
 	// exactly what a full jump can reach for this class.
 	return gravity > 0.f ? Square( BG_Class( classNum )->jumpMagnitude ) / ( gravity * 2.f ) : 0.f;
+}
+
+// The height above the bot that a target must exceed before a wall detour is forced for it
+// (independent of being boxed in). This is the jump apex (BotClimbMinHeight) plus the class's
+// melee bite reach from the apex -- the same value used as the wall-bite distance below -- so
+// a target within that is reached by an ordinary jump + bite, and a wall climb is only forced
+// for a target higher than it, or when the bot is boxed in under the target. g_bot_wallwalkJumpReach
+// pins an explicit threshold; 0 uses the class's own apex + bite.
+static float BotJumpReach( gentity_t *self )
+{
+	const float pinned = g_bot_wallwalkJumpReach.Get();
+	if ( pinned > 0.f )
+	{
+		return pinned;
+	}
+
+	const class_t classNum = static_cast<class_t>( self->client->ps.stats[ STAT_CLASS ] );
+	glm::vec3 cmins, cmaxs;
+	BG_BoundingBox( classNum, &cmins, &cmaxs, nullptr, nullptr, nullptr );
+	const float botReach = std::max(
+		std::max( cmins.x, cmins.y ),
+		std::max( cmaxs.x, cmaxs.y ) );
+	const float cvarBite = g_bot_wallwalkClimbRange.Get();
+	const float biteDistance = cvarBite > 0.f ? cvarBite : botReach + 8.f;
+	return BotClimbMinHeight( self ) + biteDistance;
 }
 
 // How long (ms) a wallwalk-capable bot must be stuck (no progress toward its goal, per the
@@ -1350,12 +1391,13 @@ static bool BotIsAttemptingWallBite( gentity_t *self )
 	glm::vec3 ownPos = VEC2GLM( self->s.origin );
 	glm::vec3 targetPos = goal.getPos();
 
-	// The enemy must be above the bot by at least the climb min height; a target at or below
-	// us is an ordinary jump/pounce situation, not a wall bite. When the bot is boxed in under
-	// the target (a surface sits above it, so a jump cannot reach the target -- its XZ may be on
-	// a platform/bridge only a wall climb can reach), however, a small gap does NOT mean a jump
-	// reaches the target, so we relax the height test and keep the bot biting instead of letting
-	// it launch off and whiff the enemy above. A committed detour (see
+	// The enemy must be above the bot by at least the jump+bite reach (jump apex plus the
+	// class's melee bite reach, BotJumpReach); a target within that is reached by an ordinary
+	// jump/pounce + bite, so we let the bot pounce instead of keeping it on the wall. When the
+	// bot is boxed in under the target (a surface sits above it, so a jump cannot reach the
+	// target -- its XZ may be on a platform/bridge only a wall climb can reach), however, a small
+	// gap does NOT mean a jump reaches the target, so we relax the height test and keep the bot
+	// biting instead of letting it launch off and whiff the enemy above. A committed detour (see
 	// BotWallwalkClimbTowardGoal) keeps the bot on the wall for the same window, so it does
 	// not pounce off a wall it is mid-way up toward the target. The time-based `stuck` flag is
 	// kept as a fallback for the rare case the trace misses, but the positional boxedIn test is
@@ -1364,7 +1406,7 @@ static bool BotIsAttemptingWallBite( gentity_t *self )
 	const bool stuck = level.time - self->botMind->stuckTime > BOT_WALLWALK_STUCK_THRESHOLD;
 	const bool detourCommit = self->botMind->wallwalkDetourTime > 0
 		&& level.time - self->botMind->wallwalkDetourTime < BOT_WALLWALK_DETOUR_COMMIT_WINDOW;
-	if ( targetPos.z - ownPos.z < BotClimbMinHeight( self ) && !boxedIn && !stuck && !detourCommit )
+	if ( targetPos.z - ownPos.z < BotJumpReach( self ) && !boxedIn && !stuck && !detourCommit )
 	{
 		return false;
 	}
@@ -1433,7 +1475,14 @@ bool BotWallwalkClimbTowardGoal( gentity_t *self )
 	// above the bot. This is what gates the whole decision, and it is a *gap* (not an
 	// absolute height) so it is stable regardless of the map's floor level.
 	const float heightDiff = targetPos.z - ownPos.z;
-	const float climbMin = BotClimbMinHeight( self );
+	// A target is "high enough" to warrant a wall detour only when it sits above what a jump
+	// plus a melee bite can reach (BotJumpReach = jump apex + bite reach). A target within that
+	// is reached by an ordinary jump/bite, so a wall detour is forced for it only when the bot
+	// is boxed in under it (its XZ is on a surface a ground walk cannot reach). This is the fix
+	// for "bots detour to a wall even for a target a little above them". The time-based triggers
+	// below are gated on this so a same-ish-height enemy is never sent to a wall.
+	const float jumpReach = BotJumpReach( self );
+	const bool highEnough = heightDiff > jumpReach;
 
 	// When the bot is boxed in under the target -- a surface sits directly above it, so an
 	// ordinary jump/pounce cannot reach the target's XZ (which is on a platform/bridge only a
@@ -1444,9 +1493,19 @@ bool BotWallwalkClimbTowardGoal( gentity_t *self )
 	// it fires the instant the bot is boxed in, so the bot steers to a wall immediately instead
 	// of circling under the target for the 2.5 s stuck timer. The time-based `stuck` flag is
 	// kept only as a fallback for the rare case the trace misses.
+	// The target is above the bot (a positive vertical gap). A same-level floor target has
+	// heightDiff <= 0 and is reached by walking, so the time-based detour triggers (stuck) and
+	// a committed detour must never fire for it -- only boxedIn (a surface sitting between the
+	// bot and the target, which a walk cannot cross) forces a climb regardless of height. This
+	// is the fix for the "bots detour to a wall even when the target is on the same floor" case.
+	// The time-based `stuck` trigger is additionally gated on highEnough: a target within the
+	// jump+bite reach is reached by a jump/bite, so being stuck for 2.5 s is not a reason to
+	// detour to a wall for it (only boxedIn is). This is the "bots detour to a wall even for a
+	// target just a little above them" fix.
+	const bool targetAbove = heightDiff > 0.f;
 	const bool boxedIn = BotBlockedFromTarget( self, ownPos, targetPos );
 	const bool stuck = level.time - self->botMind->stuckTime > BOT_WALLWALK_STUCK_THRESHOLD;
-	const bool needDetour = boxedIn || stuck;
+	const bool needDetour = boxedIn || ( targetAbove && highEnough && stuck );
 
 	// A climb is in progress (within the hold window or physically attached) and the
 	// target is still above us: keep biting on the wall so we finish reaching it instead
@@ -1571,7 +1630,7 @@ bool BotWallwalkClimbTowardGoal( gentity_t *self )
 	// Fresh search for the nearest reachable wall this tick. The mesh is static, so while a
 	// detour is committed (below) the walk-to-base and bite phases instead drive to the wall
 	// the bot locked on, rather than re-picking the nearest wall every tick as the target moves.
-	bool hasWall = G_BotNearestWallConnection( self->s.number, ownPos, targetPos, markerPos, markerDist, wallCount, markerTopZ, g_bot_wallwalkHeightReach.Get(), g_bot_wallwalkOvershootReach.Get() );
+	bool hasWall = G_BotNearestWallConnection( self->s.number, ownPos, targetPos, markerPos, markerDist, wallCount, markerTopZ, g_bot_wallwalkHeightReach.Get(), g_bot_wallwalkOvershootReach.Get(), g_bot_wallwalkLateralBias.Get() );
 
 	// A wall whose top reaches (or passes) the target's height is a signal that the target is
 	// on a surface the bot can only get to by climbing -- e.g. a bridge or platform the bot is
@@ -1594,7 +1653,7 @@ bool BotWallwalkClimbTowardGoal( gentity_t *self )
 	// back under the target before it reaches the wall -- the "climbs a bit then returns under
 	// me" symptom. A value of 0 means "never committed" (the initial state), so a freshly spawned
 	// bot is not treated as mid-detour.
-	const bool pursuingClimb = needDetour || ( wallInSeek && heightDiff > 0.f );
+	const bool pursuingClimb = needDetour || ( wallInSeek && targetAbove && highEnough );
 	const bool withinCommitWindow = self->botMind->wallwalkDetourTime > 0
 		&& level.time - self->botMind->wallwalkDetourTime < BOT_WALLWALK_DETOUR_COMMIT_WINDOW;
 
@@ -1641,28 +1700,30 @@ bool BotWallwalkClimbTowardGoal( gentity_t *self )
 			wallReachesTarget ? " reaches target" : "", markerTopZ, markerDist );
 	}
 
-	// The target is above us but within the jump apex (a positive gap smaller than
-	// climbMin): normally a jump/pounce reaches it, so leave it to the ordinary upward
-	// movement below and don't climb. We bypass this -- and fall through to the wall search
-	// so the bot steers to a wall and climbs -- whenever climbing is the right way up, which
-	// for a wallwalker means an elevated target it cannot get onto by a ground jump: a low
-	// platform/bridge it is boxed in under (the "bot circles directly under me" case), a
-	// climbable wall within the seek range, or a detour it is already committed to. This is
-	// the "prefer wallwalking as the primary approach" behaviour; the heightDiff > 0 guard on
-	// the wall branch keeps an exactly same-level enemy (reached by walking) from making the
-	// bot detour to a far wall. The time-based stuck flag is kept only as a fallback.
-	const bool preferClimb = needDetour || detourCommit || ( wallInSeek && heightDiff > 0.f );
-	if ( heightDiff < climbMin && !preferClimb )
+	// The target is above us but within the jump+bite reach (a gap smaller than jumpReach, the
+	// jump apex plus the class's bite reach): normally a jump/pounce + bite reaches it, so leave
+	// it to the ordinary upward movement below and don't climb. We bypass this -- and fall through
+	// to the wall search so the bot steers to a wall and climbs -- whenever climbing is the right
+	// way up, which for a wallwalker means an elevated target it cannot get onto by a ground jump:
+	// a low platform/bridge it is boxed in under (the "bot circles directly under me" case, which
+	// boxedIn forces even below the jump reach), a high climbable wall within the seek range, or a
+	// detour it is already committed to. This is the "prefer wallwalking as the primary approach"
+	// behaviour. The highEnough guard on the non-boxed triggers keeps an enemy within the jump+bite
+	// reach (reached by a jump/bite) from making the bot detour to a far wall -- the "bots detour to
+	// a wall even for a target just a little above them" fix. The time-based stuck flag is kept only
+	// as a fallback, and only when the target is high enough that a jump cannot reach it.
+	const bool preferClimb = needDetour || ( targetAbove && highEnough && detourCommit ) || ( wallInSeek && targetAbove && highEnough );
+	if ( !highEnough && !preferClimb )
 	{
 		if ( wantDebug && level.time >= s_nextLog )
 		{
 			s_nextLog = level.time + 1000;
-			Log::Notice( "Wallwalk: client %d (%s) target only %.0f above (self z %.0f, target z %.0f), below min height %.0f, no wall in range -> not climbing",
-				self->s.number, BG_Class( classNum )->name, heightDiff, ownPos.z, targetPos.z, climbMin );
+			Log::Notice( "Wallwalk: client %d (%s) target only %.0f above (self z %.0f, target z %.0f), within jump+bite reach %.0f, not boxed in -> jumping/biting, not climbing",
+				self->s.number, BG_Class( classNum )->name, heightDiff, ownPos.z, targetPos.z, jumpReach );
 		}
 		return false;
 	}
-	else if ( heightDiff < climbMin && preferClimb && wantDebug && level.time >= s_nextLog )
+	else if ( !highEnough && preferClimb && wantDebug && level.time >= s_nextLog )
 	{
 		s_nextLog = level.time + 1000;
 		Log::Notice( "Wallwalk: client %d (%s) target only %.0f above%s%s%s -> detouring to a wall (top %.0f, target %.0f)",
@@ -1883,7 +1944,7 @@ bool BotWallwalkBuildTowardGoal( gentity_t *self )
 	// Fresh search for the nearest reachable wall this tick. As in the combat path, while a
 	// detour is committed the builder drives to the wall it locked on rather than re-picking the
 	// nearest wall every tick as it approaches the elevated build spot.
-	bool hasWall = G_BotNearestWallConnection( self->s.number, ownPos, targetPos, markerPos, markerDist, wallCount, markerTopZ, g_bot_wallwalkHeightReach.Get(), g_bot_wallwalkOvershootReach.Get() );
+	bool hasWall = G_BotNearestWallConnection( self->s.number, ownPos, targetPos, markerPos, markerDist, wallCount, markerTopZ, g_bot_wallwalkHeightReach.Get(), g_bot_wallwalkOvershootReach.Get(), 0.f );
 	( void )wallCount;
 	( void )markerTopZ;
 
